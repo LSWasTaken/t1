@@ -4,11 +4,20 @@ service cloud.firestore {
     // Players collection rules
     match /players/{playerId} {
       allow read: if true;  // Anyone can read player data
-      allow create: if request.auth != null && request.auth.uid == playerId;
+      allow create: if request.auth != null && 
+        request.auth.uid == playerId &&
+        request.resource.data.uid == request.auth.uid &&
+        request.resource.data.keys().hasAll(['uid', 'email', 'power', 'wins', 'losses']) &&
+        request.resource.data.power is number &&
+        request.resource.data.wins is number &&
+        request.resource.data.losses is number;
+      
       allow update: if request.auth != null && (
         request.auth.uid == playerId ||  // Player can update their own data
-        resource.data.uid == request.auth.uid  // Or if they're the owner
-      );
+        request.auth.uid == resource.data.uid  // Or if they're the owner
+      ) && request.resource.data.diff(resource.data).affectedKeys()
+          .hasAny(['power', 'wins', 'losses', 'lastMatch', 'username']);
+      
       allow delete: if false;  // No one can delete player data
     }
     
@@ -21,6 +30,11 @@ service cloud.firestore {
         request.auth.uid == resource.data.player2Id
       );
       allow delete: if false;
+    }
+
+    // Allow querying players collection
+    match /players/{playerId} {
+      allow list: if true;  // Allow listing all players
     }
   }
 } 

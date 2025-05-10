@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react';
 import { useAuth } from '@/lib/auth';
 import { db } from '@/lib/firebase';
-import { collection, query, where, getDocs, doc, updateDoc, increment, addDoc, serverTimestamp, FieldValue } from 'firebase/firestore';
+import { collection, query, where, getDocs, doc, updateDoc, increment, addDoc, serverTimestamp, FieldValue, getDoc, setDoc } from 'firebase/firestore';
 
 interface Player {
   id: string;
@@ -39,15 +39,34 @@ export default function Combat({ playerPower }: { playerPower: number }) {
     setBattleLog([]);
 
     try {
-      // First try to find players with similar power (±30% range)
-      const powerRange = playerPower * 0.3;
-      const minPower = Math.max(1, playerPower - powerRange);
-      const maxPower = playerPower + powerRange;
+      // First check if the current user exists in the players collection
+      const playerRef = doc(db, 'players', user.uid);
+      const playerDoc = await getDoc(playerRef);
+      
+      if (!playerDoc.exists()) {
+        // Create player document if it doesn't exist
+        try {
+          await setDoc(doc(db, 'players', user.uid), {
+            uid: user.uid,
+            email: user.email,
+            power: playerPower, // Use the current player power
+            wins: 0,
+            losses: 0,
+            lastMatch: serverTimestamp()
+          });
+          console.log('Created new player document');
+          setBattleLog(prev => [...prev, 'Created new player profile!']);
+        } catch (error) {
+          console.error('Error creating player document:', error);
+          setBattleLog(prev => [...prev, 'Error creating player profile. Please try again.']);
+          setIsSearching(false);
+          return;
+        }
+      }
 
+      // Find any opponent except the current user
       const q = query(
         collection(db, 'players'),
-        where('power', '>=', minPower),
-        where('power', '<=', maxPower),
         where('uid', '!=', user.uid)
       );
 
@@ -64,25 +83,7 @@ export default function Combat({ playerPower }: { playerPower: number }) {
         setOpponent(selectedOpponent);
         setBattleLog(prev => [...prev, `Found opponent: ${selectedOpponent.username || selectedOpponent.email?.split('@')[0] || 'Anonymous'}`]);
       } else {
-        // If no opponents in range, find any opponent
-        const allPlayersQuery = query(
-          collection(db, 'players'),
-          where('uid', '!=', user.uid)
-        );
-        const allPlayersSnapshot = await getDocs(allPlayersQuery);
-        const allPlayers = allPlayersSnapshot.docs.map(doc => ({
-          id: doc.id,
-          ...doc.data()
-        } as Player));
-
-        if (allPlayers.length > 0) {
-          const randomIndex = Math.floor(Math.random() * allPlayers.length);
-          const selectedOpponent = allPlayers[randomIndex];
-          setOpponent(selectedOpponent);
-          setBattleLog(prev => [...prev, `Found opponent: ${selectedOpponent.username || selectedOpponent.email?.split('@')[0] || 'Anonymous'}`]);
-        } else {
-          setBattleLog(prev => [...prev, 'No opponents found. Try again later!']);
-        }
+        setBattleLog(prev => [...prev, 'No other players found. Be the first to join the arena!']);
       }
     } catch (error) {
       console.error('Error finding opponent:', error);
@@ -97,9 +98,9 @@ export default function Combat({ playerPower }: { playerPower: number }) {
     setIsInCombat(true);
 
     try {
-      // Calculate attack and defense rolls with some randomness
-      const attackRoll = Math.floor(Math.random() * playerPower * 1.2); // Up to 20% bonus
-      const defenseRoll = Math.floor(Math.random() * opponent.power * 1.2);
+      // Calculate attack and defense rolls with more randomness
+      const attackRoll = Math.floor(Math.random() * playerPower * 2); // Up to 100% bonus
+      const defenseRoll = Math.floor(Math.random() * opponent.power * 2);
 
       setBattleLog(prev => [
         ...prev,
@@ -108,8 +109,8 @@ export default function Combat({ playerPower }: { playerPower: number }) {
       ]);
 
       if (attackRoll > defenseRoll) {
-        // Calculate power gain (10% of opponent's power)
-        const powerGain = Math.floor(opponent.power * 0.1);
+        // Calculate power gain based on opponent's power and a random factor
+        const powerGain = Math.floor(opponent.power * (0.05 + Math.random() * 0.1)); // 5-15% of opponent's power
         
         // Update player's power and wins
         const playerRef = doc(db, 'players', user.uid);
