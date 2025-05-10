@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react';
 import { useAuth } from '@/lib/auth';
 import { db } from '@/lib/firebase';
-import { collection, query, where, getDocs, doc, updateDoc, increment, addDoc, serverTimestamp, FieldValue, getDoc, setDoc } from 'firebase/firestore';
+import { doc, getDoc, updateDoc, increment, collection, addDoc, serverTimestamp, FieldValue, query, where, getDocs } from 'firebase/firestore';
 
 interface Player {
   id: string;
@@ -13,6 +13,9 @@ interface Player {
   power: number;
   wins: number;
   losses: number;
+  winStreak: number;
+  highestWinStreak: number;
+  inQueue?: boolean;
 }
 
 interface MatchData {
@@ -37,15 +40,18 @@ export default function Combat() {
   const [playerHealth, setPlayerHealth] = useState(MAX_HEALTH);
   const [opponentHealth, setOpponentHealth] = useState(MAX_HEALTH);
   const [isInCombat, setIsInCombat] = useState(false);
+  const [inQueue, setInQueue] = useState(false);
 
   useEffect(() => {
     const fetchPlayerData = async () => {
       if (!user) return;
 
       try {
-        const playerDoc = await getDoc(doc(db, 'players', user.uid));
+        const playerRef = doc(db, 'players', user.uid);
+        const playerDoc = await getDoc(playerRef);
         const playerData = playerDoc.data();
         setPlayerPower(playerData?.power || 0);
+        setInQueue(playerData?.inQueue || false);
       } catch (error) {
         console.error('Error fetching player data:', error);
       } finally {
@@ -61,42 +67,25 @@ export default function Combat() {
     setOpponentHealth(MAX_HEALTH);
   };
 
-  const findOpponent = async () => {
+  const joinQueue = async () => {
     if (!user) return;
     setIsSearching(true);
     setBattleLog([]);
     resetHealth();
 
     try {
-      // First check if the current user exists in the players collection
       const playerRef = doc(db, 'players', user.uid);
-      const playerDoc = await getDoc(playerRef);
-      
-      if (!playerDoc.exists()) {
-        // Create player document if it doesn't exist
-        try {
-          await setDoc(playerRef, {
-            uid: user.uid,
-            email: user.email,
-            power: playerPower,
-            wins: 0,
-            losses: 0,
-            lastMatch: serverTimestamp()
-          });
-          console.log('Created new player document');
-          setBattleLog(prev => [...prev, 'Created new player profile!']);
-        } catch (error) {
-          console.error('Error creating player document:', error);
-          setBattleLog(prev => [...prev, 'Error creating player profile. Please try again.']);
-          setIsSearching(false);
-          return;
-        }
-      }
+      await updateDoc(playerRef, {
+        inQueue: true,
+        lastMatch: serverTimestamp()
+      });
+      setInQueue(true);
 
-      // Find any opponent except the current user
+      // Find opponent in queue
       const q = query(
         collection(db, 'players'),
-        where('uid', '!=', user.uid)
+        where('uid', '!=', user.uid),
+        where('inQueue', '==', true)
       );
 
       const querySnapshot = await getDocs(q);
@@ -110,26 +99,42 @@ export default function Combat() {
         const randomIndex = Math.floor(Math.random() * potentialOpponents.length);
         const selectedOpponent = potentialOpponents[randomIndex];
         setOpponent(selectedOpponent);
-        setBattleLog(prev => [...prev, `Found opponent: ${selectedOpponent.username || selectedOpponent.email?.split('@')[0] || 'Anonymous'}`]);
+        setBattleLog([`Found opponent: ${selectedOpponent.username || selectedOpponent.email?.split('@')[0] || 'Anonymous'}`]);
       } else {
-        setBattleLog(prev => [...prev, 'No other players found. Be the first to join the arena!']);
+        setBattleLog(['Waiting for opponent...']);
       }
     } catch (error) {
-      console.error('Error finding opponent:', error);
-      setBattleLog(prev => [...prev, 'Error finding opponent. Try again!']);
+      console.error('Error joining queue:', error);
+      setBattleLog(['Error joining queue. Try again!']);
     } finally {
       setIsSearching(false);
+    }
+  };
+
+  const leaveQueue = async () => {
+    if (!user) return;
+    try {
+      const playerRef = doc(db, 'players', user.uid);
+      await updateDoc(playerRef, {
+        inQueue: false
+      });
+      setInQueue(false);
+      setOpponent(null);
+      setBattleLog([]);
+    } catch (error) {
+      console.error('Error leaving queue:', error);
     }
   };
 
   const attack = async () => {
     if (!user || !opponent) return;
     setIsInCombat(true);
+    setBattleLog([]); // Reset battle log for new move
 
     try {
       // Calculate attack and defense with more randomness
-      const attackRoll = Math.random() * 2; // 0 to 2 (up to 100% bonus)
-      const defenseRoll = Math.random() * 2; // 0 to 2 (up to 100% bonus)
+      const attackRoll = Math.random() * 2;
+      const defenseRoll = Math.random() * 2;
       
       const attackPower = playerPower * attackRoll;
       const defensePower = opponent.power * defenseRoll;
@@ -142,35 +147,42 @@ export default function Combat() {
       const newOpponentHealth = Math.max(0, opponentHealth - damage);
       setOpponentHealth(newOpponentHealth);
 
-      setBattleLog(prev => [
-        ...prev,
+      const newBattleLog = [
         `You attacked with ${Math.floor(attackPower)} power!`,
         `Opponent defended with ${Math.floor(defensePower)} power!`,
         `Dealt ${damage} damage!`
-      ]);
+      ];
 
       // Check if opponent is defeated
       if (newOpponentHealth <= 0) {
-        // Calculate variable power gain (5-15% of opponent's power)
-        const powerGainPercentage = 0.05 + Math.random() * 0.1; // 5% to 15%
+        const powerGainPercentage = 0.05 + Math.random() * 0.1;
         const powerGain = Math.floor(opponent.power * powerGainPercentage);
         
-        // Update player's power
+        // Get current player data to update win streak
         const playerRef = doc(db, 'players', user.uid);
+        const playerDoc = await getDoc(playerRef);
+        const playerData = playerDoc.data();
+        
+        const currentWinStreak = (playerData?.winStreak || 0) + 1;
+        const highestWinStreak = Math.max(currentWinStreak, playerData?.highestWinStreak || 0);
+
         await updateDoc(playerRef, {
           power: increment(powerGain),
           wins: increment(1),
-          lastMatch: serverTimestamp()
+          inQueue: false,
+          lastMatch: serverTimestamp(),
+          winStreak: currentWinStreak,
+          highestWinStreak: highestWinStreak
         });
 
-        // Update opponent's losses
         const opponentRef = doc(db, 'players', opponent.id);
         await updateDoc(opponentRef, {
           losses: increment(1),
-          lastMatch: serverTimestamp()
+          inQueue: false,
+          lastMatch: serverTimestamp(),
+          winStreak: 0 // Reset opponent's win streak
         });
 
-        // Record the match
         await addDoc(collection(db, 'matches'), {
           player1Id: user.uid,
           player2Id: opponent.id,
@@ -181,12 +193,13 @@ export default function Combat() {
           timestamp: serverTimestamp()
         } as MatchData);
 
-        setBattleLog(prev => [
-          ...prev,
-          `Victory! Gained ${powerGain} power!`
-        ]);
+        newBattleLog.push(
+          `Victory! Gained ${powerGain} power!`,
+          currentWinStreak >= 2 ? `Win Streak: ${currentWinStreak}!` : ''
+        );
         setPlayerPower(prev => prev + powerGain);
         setOpponent(null);
+        setInQueue(false);
       } else {
         // Opponent counter-attacks
         const counterAttackRoll = Math.random() * 2;
@@ -200,30 +213,28 @@ export default function Combat() {
           const newPlayerHealth = Math.max(0, playerHealth - counterDamage);
           setPlayerHealth(newPlayerHealth);
 
-          setBattleLog(prev => [
-            ...prev,
+          newBattleLog.push(
             `Opponent counter-attacked with ${Math.floor(counterAttackPower)} power!`,
             `You defended with ${Math.floor(counterDefensePower)} power!`,
             `Took ${counterDamage} damage!`
-          ]);
+          );
 
-          // Check if player is defeated
           if (newPlayerHealth <= 0) {
-            // Update player's losses
             const playerRef = doc(db, 'players', user.uid);
             await updateDoc(playerRef, {
               losses: increment(1),
-              lastMatch: serverTimestamp()
+              inQueue: false,
+              lastMatch: serverTimestamp(),
+              winStreak: 0 // Reset win streak on loss
             });
 
-            // Update opponent's wins
             const opponentRef = doc(db, 'players', opponent.id);
             await updateDoc(opponentRef, {
               wins: increment(1),
+              inQueue: false,
               lastMatch: serverTimestamp()
             });
 
-            // Record the match
             await addDoc(collection(db, 'matches'), {
               player1Id: user.uid,
               player2Id: opponent.id,
@@ -234,24 +245,23 @@ export default function Combat() {
               timestamp: serverTimestamp()
             } as MatchData);
 
-            setBattleLog(prev => [
-              ...prev,
-              'You were defeated! Better luck next time!'
-            ]);
+            newBattleLog.push('You were defeated! Better luck next time!');
             setOpponent(null);
+            setInQueue(false);
           }
         } else {
-          setBattleLog(prev => [
-            ...prev,
+          newBattleLog.push(
             `Opponent counter-attacked with ${Math.floor(counterAttackPower)} power!`,
             `You defended with ${Math.floor(counterDefensePower)} power!`,
             'You blocked the attack!'
-          ]);
+          );
         }
       }
+
+      setBattleLog(newBattleLog);
     } catch (error) {
       console.error('Error in combat:', error);
-      setBattleLog(prev => [...prev, 'Error in combat. Try again!']);
+      setBattleLog(['Error in combat. Try again!']);
     } finally {
       setIsInCombat(false);
     }
@@ -264,13 +274,13 @@ export default function Combat() {
   }
 
   return (
-    <div className="space-y-6">
-      <div className="flex justify-between items-center">
-        <div className="text-cyber-blue">
+    <div className="space-y-4">
+      <div className="flex flex-col sm:flex-row justify-between items-center gap-2">
+        <div className="text-cyber-blue text-center sm:text-left">
           Your Power: {playerPower}
         </div>
         {opponent && (
-          <div className="text-cyber-pink">
+          <div className="text-cyber-pink text-center sm:text-right">
             Opponent Power: {opponent.power}
           </div>
         )}
@@ -280,15 +290,15 @@ export default function Combat() {
         <div className="space-y-4">
           {!opponent ? (
             <button
-              onClick={findOpponent}
+              onClick={inQueue ? leaveQueue : joinQueue}
               disabled={isSearching}
               className="w-full px-6 py-3 bg-cyber-pink text-white rounded-lg font-press-start hover:bg-cyber-purple transition-colors disabled:opacity-50"
             >
-              {isSearching ? 'Searching...' : 'Find Opponent'}
+              {isSearching ? 'Searching...' : inQueue ? 'Leave Queue' : 'Join Queue'}
             </button>
           ) : (
             <div className="space-y-4">
-              <div className="text-cyber-yellow">
+              <div className="text-cyber-yellow text-center">
                 Fighting against: {opponent.username || opponent.email?.split('@')[0] || 'Anonymous'}
               </div>
               
@@ -320,7 +330,7 @@ export default function Combat() {
                 </div>
               </div>
 
-              <div className="flex space-x-4">
+              <div className="flex flex-col sm:flex-row gap-2">
                 <button
                   onClick={attack}
                   disabled={isInCombat}
@@ -329,10 +339,10 @@ export default function Combat() {
                   {isInCombat ? 'Fighting...' : 'Attack!'}
                 </button>
                 <button
-                  onClick={() => setOpponent(null)}
+                  onClick={leaveQueue}
                   className="px-6 py-3 bg-cyber-black border-2 border-cyber-pink text-cyber-pink rounded-lg font-press-start hover:bg-cyber-purple transition-colors"
                 >
-                  Find New Opponent
+                  Leave Battle
                 </button>
               </div>
             </div>
@@ -345,7 +355,7 @@ export default function Combat() {
           <h3 className="text-cyber-pink mb-2">Battle Log:</h3>
           <div className="space-y-1">
             {battleLog.map((log, index) => (
-              <div key={index} className="text-cyber-blue">
+              <div key={index} className="text-cyber-blue text-center sm:text-left">
                 {log}
               </div>
             ))}

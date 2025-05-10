@@ -6,68 +6,81 @@ import { db } from '@/lib/firebase';
 import { doc, getDoc, updateDoc } from 'firebase/firestore';
 import { useRouter } from 'next/navigation';
 
+interface Player {
+  uid: string;
+  email?: string;
+  username?: string;
+  power: number;
+  tanzaWins: number;
+  losses: number;
+  winStreak: number;
+  highestWinStreak: number;
+}
+
 export default function ProfilePage() {
   const { user } = useAuth();
   const router = useRouter();
+  const [player, setPlayer] = useState<Player | null>(null);
+  const [loading, setLoading] = useState(true);
   const [username, setUsername] = useState('');
-  const [isLoading, setIsLoading] = useState(true);
-  const [stats, setStats] = useState({
-    power: 0,
-    clicks: 0,
-    wins: 0,
-    losses: 0,
-  });
+  const [isEditing, setIsEditing] = useState(false);
 
   useEffect(() => {
-    if (user) {
-      loadProfile();
-    }
+    const fetchPlayerData = async () => {
+      if (!user) return;
+
+      try {
+        const playerDoc = await getDoc(doc(db, 'players', user.uid));
+        const playerData = playerDoc.data();
+        if (playerData) {
+          setPlayer({
+            uid: playerData.uid,
+            email: playerData.email,
+            username: playerData.username,
+            power: playerData.power || 0,
+            tanzaWins: playerData.tanzaWins || 0,
+            losses: playerData.losses || 0,
+            winStreak: playerData.winStreak || 0,
+            highestWinStreak: playerData.highestWinStreak || 0
+          });
+          setUsername(playerData.username || '');
+        }
+      } catch (error) {
+        console.error('Error fetching player data:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchPlayerData();
   }, [user]);
 
-  const loadProfile = async () => {
-    if (!user) return;
-    
-    try {
-      const playerRef = doc(db, 'players', user.uid);
-      const playerDoc = await getDoc(playerRef);
-      
-      if (playerDoc.exists()) {
-        const data = playerDoc.data();
-        setUsername(data.username || '');
-        setStats({
-          power: data.power || 0,
-          clicks: data.clicks || 0,
-          wins: data.wins || 0,
-          losses: data.losses || 0,
-        });
-      }
-    } catch (error) {
-      console.error('Error loading profile:', error);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleUpdateProfile = async () => {
+  const handleUpdateUsername = async () => {
     if (!user || !username.trim()) return;
 
     try {
       const playerRef = doc(db, 'players', user.uid);
       await updateDoc(playerRef, {
-        username: username.trim(),
+        username: username.trim()
       });
-      alert('Profile updated successfully!');
+      setPlayer(prev => prev ? { ...prev, username: username.trim() } : null);
+      setIsEditing(false);
     } catch (error) {
-      console.error('Error updating profile:', error);
-      alert('Failed to update profile');
+      console.error('Error updating username:', error);
     }
   };
 
-  if (isLoading) {
+  if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-cyber-black text-white">
         <div className="text-2xl font-press-start text-cyber-pink">Loading...</div>
       </div>
+    );
+  }
+
+  if (!player) {
+    return (
+      <div className="text-cyber-blue text-center">No profile data found.</div>
     );
   }
 
@@ -79,43 +92,66 @@ export default function ProfilePage() {
         </h1>
 
         <div className="bg-cyber-dark rounded-lg p-6 space-y-6">
-          <div>
-            <label className="block text-cyber-blue mb-2">Username</label>
-            <input
-              type="text"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              className="w-full px-4 py-2 bg-cyber-black border border-cyber-pink rounded-lg text-white focus:outline-none focus:border-cyber-purple"
-              placeholder="Enter your username"
-            />
+          <div className="flex flex-col sm:flex-row justify-between items-center gap-4">
+            <div className="text-cyber-yellow text-center sm:text-left">
+              {isEditing ? (
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={username}
+                    onChange={(e) => setUsername(e.target.value)}
+                    className="px-4 py-2 bg-cyber-black border-2 border-cyber-pink text-cyber-blue rounded-lg font-press-start focus:outline-none focus:border-cyber-purple"
+                    placeholder="Enter username"
+                  />
+                  <button
+                    onClick={handleUpdateUsername}
+                    className="px-4 py-2 bg-cyber-pink text-white rounded-lg font-press-start hover:bg-cyber-purple transition-colors"
+                  >
+                    Save
+                  </button>
+                </div>
+              ) : (
+                <div className="flex gap-2 items-center">
+                  <span className="text-red-500 font-bold">{player.username || 'Anonymous'}</span>
+                  {player.winStreak >= 2 && (
+                    <span className="text-yellow-400" title={`${player.winStreak} Win Streak!`}>
+                      👑
+                    </span>
+                  )}
+                  <button
+                    onClick={() => setIsEditing(true)}
+                    className="px-4 py-2 bg-cyber-black border-2 border-cyber-pink text-cyber-pink rounded-lg font-press-start hover:bg-cyber-purple transition-colors"
+                  >
+                    Edit
+                  </button>
+                </div>
+              )}
+            </div>
+            <div className="text-cyber-blue text-center sm:text-right">
+              Power: {player.power}
+            </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
-            <div className="bg-cyber-black rounded-lg p-4">
-              <h3 className="text-cyber-pink font-press-start mb-2">Power</h3>
-              <p className="text-cyber-green text-xl">{stats.power}</p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="bg-cyber-black border-2 border-cyber-pink rounded-lg p-4">
+              <div className="text-cyber-pink text-center">Tanza Mode Wins</div>
+              <div className="text-cyber-blue text-2xl text-center">{player.tanzaWins}</div>
             </div>
-            <div className="bg-cyber-black rounded-lg p-4">
-              <h3 className="text-cyber-pink font-press-start mb-2">Clicks</h3>
-              <p className="text-cyber-green text-xl">{stats.clicks}</p>
+            <div className="bg-cyber-black border-2 border-cyber-pink rounded-lg p-4">
+              <div className="text-cyber-pink text-center">Losses</div>
+              <div className="text-cyber-blue text-2xl text-center">{player.losses}</div>
             </div>
-            <div className="bg-cyber-black rounded-lg p-4">
-              <h3 className="text-cyber-pink font-press-start mb-2">Wins</h3>
-              <p className="text-cyber-green text-xl">{stats.wins}</p>
+            <div className="bg-cyber-black border-2 border-cyber-pink rounded-lg p-4">
+              <div className="text-cyber-pink text-center">Current Win Streak</div>
+              <div className="text-cyber-blue text-2xl text-center">{player.winStreak}</div>
             </div>
-            <div className="bg-cyber-black rounded-lg p-4">
-              <h3 className="text-cyber-pink font-press-start mb-2">Losses</h3>
-              <p className="text-cyber-green text-xl">{stats.losses}</p>
+            <div className="bg-cyber-black border-2 border-cyber-pink rounded-lg p-4">
+              <div className="text-cyber-pink text-center">Highest Win Streak</div>
+              <div className="text-cyber-blue text-2xl text-center">{player.highestWinStreak}</div>
             </div>
           </div>
 
           <div className="flex justify-between">
-            <button
-              onClick={handleUpdateProfile}
-              className="px-6 py-3 bg-cyber-pink text-white rounded-lg font-press-start hover:bg-cyber-purple transition-colors"
-            >
-              Save Profile
-            </button>
             <button
               onClick={() => router.push('/game')}
               className="px-6 py-3 bg-cyber-blue text-white rounded-lg font-press-start hover:bg-cyber-purple transition-colors"

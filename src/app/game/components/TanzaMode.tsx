@@ -1,174 +1,294 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useAuth } from '@/lib/auth';
 import { db } from '@/lib/firebase';
-import { doc, updateDoc, increment, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
+import { collection, query, where, orderBy, limit, getDocs, doc, updateDoc, increment, addDoc, serverTimestamp, FieldValue, getDoc } from 'firebase/firestore';
 
-// List of long words for typing practice
-const LONG_WORDS = [
-  'antidisestablishmentarianism',
-  'pneumonoultramicroscopicsilicovolcanoconiosis',
-  'supercalifragilisticexpialidocious',
-  'hippopotomonstrosesquippedaliophobia',
-  'pseudopseudohypoparathyroidism',
-  'floccinaucinihilipilification',
-  'incomprehensibilities',
-  'electroencephalographically',
-  'immunoelectrophoretically',
-  'psychophysicotherapeutics',
-  'thyroparathyroidectomized',
-  'dichlorodifluoromethane',
-  'microspectrophotometrically',
-  'psychoneuroendocrinological',
-  'radioimmunoelectrophoresis'
+interface Match {
+  id: string;
+  player1Id: string;
+  player2Id: string;
+  player1Power: number;
+  player2Power: number;
+  winner: string;
+  powerGained: number;
+  timestamp: FieldValue;
+}
+
+interface Player {
+  id: string;
+  uid: string;
+  email?: string;
+  username?: string;
+  power: number;
+  wins: number;
+  losses: number;
+}
+
+const SAMPLE_TEXTS = [
+  "The quick brown fox jumps over the lazy dog.",
+  "Pack my box with five dozen liquor jugs.",
+  "How vexingly quick daft zebras jump!",
+  "Sphinx of black quartz, judge my vow.",
+  "Crazy Fredrick bought many very exquisite opal jewels.",
+  "We promptly judged antique ivory buckles for the next prize.",
+  "The five boxing wizards jump quickly.",
+  "How quickly daft jumping zebras vex.",
+  "Sphinx of black quartz, judge my vow.",
+  "Pack my box with five dozen liquor jugs.",
 ];
 
 export default function TanzaMode() {
   const { user } = useAuth();
-  const [currentWord, setCurrentWord] = useState('');
+  const [currentText, setCurrentText] = useState('');
   const [userInput, setUserInput] = useState('');
-  const [timeLeft, setTimeLeft] = useState(15);
-  const [wordsCompleted, setWordsCompleted] = useState(0);
-  const [isActive, setIsActive] = useState(false);
-  const [score, setScore] = useState(0);
-  const [message, setMessage] = useState('');
+  const [startTime, setStartTime] = useState<number | null>(null);
+  const [endTime, setEndTime] = useState<number | null>(null);
+  const [wpm, setWpm] = useState(0);
+  const [accuracy, setAccuracy] = useState(0);
+  const [isTyping, setIsTyping] = useState(false);
+  const [battleHistory, setBattleHistory] = useState<Match[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [playerPower, setPlayerPower] = useState(0);
+  const [opponent, setOpponent] = useState<Player | null>(null);
+  const [battleLog, setBattleLog] = useState<string[]>([]);
+  const [isInCombat, setIsInCombat] = useState(false);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  // Get a random word from the list
-  const getRandomWord = useCallback(() => {
-    const randomIndex = Math.floor(Math.random() * LONG_WORDS.length);
-    return LONG_WORDS[randomIndex];
-  }, []);
+  useEffect(() => {
+    const fetchPlayerData = async () => {
+      if (!user) return;
 
-  // Start a new round
-  const startNewRound = useCallback(() => {
-    setCurrentWord(getRandomWord());
-    setUserInput('');
-    setTimeLeft(15);
-    setIsActive(true);
-    setMessage('');
-  }, [getRandomWord]);
+      try {
+        const playerDoc = await getDoc(doc(db, 'players', user.uid));
+        const playerData = playerDoc.data();
+        setPlayerPower(playerData?.power || 0);
+      } catch (error) {
+        console.error('Error fetching player data:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
 
-  // Handle word completion
-  const handleWordCompletion = useCallback(async () => {
+    fetchPlayerData();
+    fetchBattleHistory();
+  }, [user]);
+
+  const fetchBattleHistory = async () => {
     if (!user) return;
 
-    const newWordsCompleted = wordsCompleted + 1;
-    setWordsCompleted(newWordsCompleted);
+    try {
+      const q = query(
+        collection(db, 'matches'),
+        where('player1Id', '==', user.uid),
+        orderBy('timestamp', 'desc'),
+        limit(5)
+      );
 
-    if (newWordsCompleted >= 10) {
-      // Award power and reset
-      try {
-        const playerRef = doc(db, 'players', user.uid);
-        const playerDoc = await getDoc(playerRef);
+      const querySnapshot = await getDocs(q);
+      const matches = querySnapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      } as Match));
 
-        if (!playerDoc.exists()) {
-          await setDoc(playerRef, {
-            uid: user.uid,
-            email: user.email,
-            power: 1,
-            wins: 0,
-            losses: 0,
-            lastMatch: serverTimestamp()
-          });
-        } else {
-          await updateDoc(playerRef, {
-            power: increment(1),
-            lastMatch: serverTimestamp()
-          });
-        }
+      setBattleHistory(matches);
+    } catch (error) {
+      console.error('Error fetching battle history:', error);
+    }
+  };
 
-        setScore(prev => prev + 1);
-        setWordsCompleted(0);
-        setMessage('Power gained! +1 power');
-      } catch (error) {
-        console.error('Error updating power:', error);
-        setMessage('Error updating power. Try again!');
+  const startNewText = () => {
+    const randomIndex = Math.floor(Math.random() * SAMPLE_TEXTS.length);
+    setCurrentText(SAMPLE_TEXTS[randomIndex]);
+    setUserInput('');
+    setStartTime(null);
+    setEndTime(null);
+    setWpm(0);
+    setAccuracy(0);
+    setIsTyping(false);
+    if (inputRef.current) {
+      inputRef.current.focus();
+    }
+  };
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const value = e.target.value;
+    setUserInput(value);
+
+    if (!isTyping) {
+      setIsTyping(true);
+      setStartTime(Date.now());
+    }
+
+    if (value.length === currentText.length) {
+      const endTimeNow = Date.now();
+      setEndTime(endTimeNow);
+      calculateResults(value, endTimeNow);
+    }
+  };
+
+  const calculateResults = (finalInput: string, endTimeNow: number) => {
+    if (!startTime) return;
+
+    const timeInMinutes = (endTimeNow - startTime) / 60000;
+    const words = finalInput.trim().split(/\s+/).length;
+    const calculatedWpm = Math.round(words / timeInMinutes);
+
+    let correctChars = 0;
+    for (let i = 0; i < finalInput.length; i++) {
+      if (finalInput[i] === currentText[i]) {
+        correctChars++;
       }
     }
+    const calculatedAccuracy = Math.round((correctChars / currentText.length) * 100);
 
-    startNewRound();
-  }, [user, wordsCompleted, startNewRound]);
+    setWpm(calculatedWpm);
+    setAccuracy(calculatedAccuracy);
 
-  // Handle timer
-  useEffect(() => {
-    let timer: NodeJS.Timeout;
+    // Only award power and increment win streak if accuracy is above 90%
+    if (calculatedAccuracy >= 90) {
+      const powerGain = calculatedWpm;
+      updatePlayerPower(powerGain);
+    } else {
+      // Reset win streak on failure
+      resetWinStreak();
+    }
+  };
 
-    if (isActive && timeLeft > 0) {
-      timer = setInterval(() => {
-        setTimeLeft(prev => prev - 1);
-      }, 1000);
-    } else if (timeLeft === 0) {
-      setIsActive(false);
-      setMessage('Time\'s up! Try again.');
+  const updatePlayerPower = async (powerGain: number) => {
+    if (!user) return;
+
+    try {
+      const playerRef = doc(db, 'players', user.uid);
+      const playerDoc = await getDoc(playerRef);
+      const playerData = playerDoc.data();
+      
+      const currentWinStreak = (playerData?.winStreak || 0) + 1;
+      const highestWinStreak = Math.max(currentWinStreak, playerData?.highestWinStreak || 0);
+
+      await updateDoc(playerRef, {
+        power: increment(powerGain),
+        tanzaWins: increment(1),
+        winStreak: currentWinStreak,
+        highestWinStreak: highestWinStreak
+      });
+      
+      setPlayerPower(prev => prev + powerGain);
+      setBattleLog([`Gained ${powerGain} power from typing!`, `Win Streak: ${currentWinStreak}`]);
+    } catch (error) {
+      console.error('Error updating player power:', error);
+    }
+  };
+
+  const resetWinStreak = async () => {
+    if (!user) return;
+
+    try {
+      const playerRef = doc(db, 'players', user.uid);
+      await updateDoc(playerRef, {
+        winStreak: 0
+      });
+      setBattleLog(['Accuracy too low! Win streak reset.']);
+    } catch (error) {
+      console.error('Error resetting win streak:', error);
+    }
+  };
+
+  const handlePaste = (e: React.ClipboardEvent) => {
+    e.preventDefault();
+    const pastedText = e.clipboardData.getData('text');
+    setUserInput(pastedText);
+    
+    if (!isTyping) {
+      setIsTyping(true);
+      setStartTime(Date.now());
     }
 
-    return () => clearInterval(timer);
-  }, [isActive, timeLeft]);
-
-  // Handle input changes
-  useEffect(() => {
-    if (userInput === currentWord) {
-      handleWordCompletion();
+    if (pastedText.length === currentText.length) {
+      const endTimeNow = Date.now();
+      setEndTime(endTimeNow);
+      calculateResults(pastedText, endTimeNow);
     }
-  }, [userInput, currentWord, handleWordCompletion]);
+  };
+
+  if (loading) {
+    return (
+      <div className="text-cyber-blue text-center">Loading Tanza Mode...</div>
+    );
+  }
 
   return (
-    <div className="bg-cyber-dark rounded-lg p-6">
-      <h3 className="text-2xl font-press-start text-cyber-pink mb-6 text-center">
-        Tanza Mode
-      </h3>
-
-      <div className="space-y-4">
-        <div className="bg-cyber-black rounded-lg p-4">
-          <div className="flex justify-between items-center mb-4">
-            <div className="text-cyber-blue">
-              Time: {timeLeft}s
+    <div className="space-y-6">
+      <div className="bg-cyber-black rounded-lg p-6">
+        <div className="space-y-4">
+          <div className="text-cyber-yellow text-center">
+            Your Power: {playerPower}
+          </div>
+          
+          <div className="space-y-2">
+            <div className="text-cyber-blue text-center">
+              {currentText || 'Click Start to begin typing'}
             </div>
-            <div className="text-cyber-green">
-              Words: {wordsCompleted}/10
-            </div>
-            <div className="text-cyber-purple">
-              Power Gained: {score}
-            </div>
+            <textarea
+              ref={inputRef}
+              value={userInput}
+              onChange={handleInputChange}
+              onPaste={handlePaste}
+              placeholder="Start typing here..."
+              className="w-full h-32 p-4 bg-cyber-black border-2 border-cyber-pink text-cyber-blue rounded-lg font-mono resize-none focus:outline-none focus:border-cyber-purple"
+              disabled={!currentText}
+            />
           </div>
 
-          {isActive ? (
-            <div className="space-y-4">
-              <div className="text-cyber-yellow text-xl font-mono break-all">
-                {currentWord}
-              </div>
-              <input
-                type="text"
-                value={userInput}
-                onChange={(e) => setUserInput(e.target.value)}
-                className="w-full px-4 py-2 bg-cyber-black border-2 border-cyber-pink text-cyber-blue rounded-lg font-mono focus:outline-none focus:border-cyber-purple"
-                placeholder="Type the word..."
-                autoFocus
-              />
-            </div>
-          ) : (
+          <div className="flex flex-col sm:flex-row justify-center gap-4">
             <button
-              onClick={startNewRound}
-              className="w-full px-6 py-3 bg-cyber-pink text-white rounded-lg font-press-start hover:bg-cyber-purple transition-colors"
+              onClick={startNewText}
+              className="px-6 py-3 bg-cyber-pink text-white rounded-lg font-press-start hover:bg-cyber-purple transition-colors"
             >
-              Start Round
+              Start New Text
             </button>
-          )}
-
-          {message && (
-            <div className="mt-4 text-center text-cyber-pink">
-              {message}
-            </div>
-          )}
-        </div>
-
-        <div className="text-sm text-cyber-blue">
-          <p>• Type 10 long words within 15 seconds each</p>
-          <p>• Each set of 10 words gives you +1 power</p>
-          <p>• Be careful with spelling!</p>
+            {wpm > 0 && (
+              <div className="text-cyber-blue text-center">
+                WPM: {wpm} | Accuracy: {accuracy}%
+              </div>
+            )}
+          </div>
         </div>
       </div>
+
+      {battleLog.length > 0 && (
+        <div className="bg-cyber-black rounded-lg p-4">
+          <h3 className="text-cyber-pink mb-2">Battle Log:</h3>
+          <div className="space-y-1">
+            {battleLog.map((log, index) => (
+              <div key={index} className="text-cyber-blue text-center">
+                {log}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {battleHistory.length > 0 && (
+        <div className="bg-cyber-black rounded-lg p-4">
+          <h3 className="text-cyber-pink mb-2">Recent Battles:</h3>
+          <div className="space-y-2">
+            {battleHistory.map((match) => (
+              <div key={match.id} className="text-cyber-blue text-center sm:text-left">
+                <div className="flex flex-col sm:flex-row justify-between items-center gap-2">
+                  <div>
+                    {match.winner === user?.uid ? 'Victory!' : 'Defeat!'}
+                  </div>
+                  <div>
+                    Power Gained: {match.powerGained}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 } 
