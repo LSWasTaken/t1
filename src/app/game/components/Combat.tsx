@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import { useAuth } from '@/lib/auth';
 import { db } from '@/lib/firebase';
 import { doc, getDoc, updateDoc, increment, collection, addDoc, serverTimestamp, FieldValue, query, where, getDocs, orderBy, onSnapshot, setDoc, deleteDoc } from 'firebase/firestore';
+import Queue from './Queue';
 
 interface Player {
   id: string;
@@ -54,19 +55,11 @@ export default function Combat() {
   const { user } = useAuth();
   const [playerPower, setPlayerPower] = useState(0);
   const [opponent, setOpponent] = useState<Player | null>(null);
-  const [isSearching, setIsSearching] = useState(false);
+  const [isInQueue, setIsInQueue] = useState(false);
   const [battleLog, setBattleLog] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [playerHealth, setPlayerHealth] = useState(MAX_HEALTH);
   const [opponentHealth, setOpponentHealth] = useState(MAX_HEALTH);
-  const [isInQueue, setIsInQueue] = useState(false);
-  const [queueTime, setQueueTime] = useState(0);
-  const [queueTimer, setQueueTimer] = useState<NodeJS.Timeout | null>(null);
-  const [canLeaveQueue, setCanLeaveQueue] = useState(true);
-  const [queueCooldown, setQueueCooldown] = useState(0);
-  const [queuePosition, setQueuePosition] = useState<number>(0);
-  const [estimatedTime, setEstimatedTime] = useState<number>(0);
-  const [matchFound, setMatchFound] = useState(false);
   const [damageNumbers, setDamageNumbers] = useState<DamageNumber[]>([]);
   const [battleTimer, setBattleTimer] = useState(0);
   const [isAttacking, setIsAttacking] = useState(false);
@@ -76,10 +69,6 @@ export default function Combat() {
   const [losses, setLosses] = useState(0);
   const [winStreak, setWinStreak] = useState(0);
   const [highestWinStreak, setHighestWinStreak] = useState(0);
-  const [isOnCooldown, setIsOnCooldown] = useState(false);
-  const [cooldownTime, setCooldownTime] = useState(0);
-  const [lastTextTime, setLastTextTime] = useState(0);
-  const MIN_TIME_BETWEEN_TEXTS = 5000; // 5 seconds
 
   // Load state from localStorage
   useEffect(() => {
@@ -102,26 +91,6 @@ export default function Combat() {
       }));
     }
   }, [playerHealth, opponentHealth]);
-
-  // Queue cooldown effect
-  useEffect(() => {
-    let timer: NodeJS.Timeout;
-    if (queueCooldown > 0) {
-      timer = setInterval(() => {
-        setQueueCooldown((prev) => {
-          if (prev <= 1) {
-            setCanLeaveQueue(true);
-            return 0;
-          }
-          return prev - 1;
-        });
-      }, 1000);
-    }
-
-    return () => {
-      if (timer) clearInterval(timer);
-    };
-  }, [queueCooldown]);
 
   useEffect(() => {
     const fetchPlayerData = async () => {
@@ -146,105 +115,6 @@ export default function Combat() {
 
     fetchPlayerData();
   }, [user]);
-
-  // Add role selection effect
-  useEffect(() => {
-    if (isInQueue && !opponent) {
-      const updateQueuePosition = async () => {
-        try {
-          const q = query(
-            collection(db, 'players'),
-            where('inQueue', '==', true),
-            orderBy('power', 'asc')
-          );
-          const snapshot = await getDocs(q);
-          const position = snapshot.docs.findIndex(doc => doc.id === user?.uid) + 1;
-          setQueuePosition(position);
-          
-          // Estimate time based on queue position
-          const baseTime = 30; // Base time in seconds
-          const positionMultiplier = Math.max(1, position / 2);
-          setEstimatedTime(Math.ceil(baseTime * positionMultiplier));
-        } catch (error) {
-          console.error('Error updating queue position:', error);
-        }
-      };
-
-      const interval = setInterval(updateQueuePosition, 2000);
-      updateQueuePosition();
-      return () => clearInterval(interval);
-    }
-  }, [isInQueue, opponent, user]);
-
-  // Add copy-paste prevention
-  useEffect(() => {
-    const preventCopyPaste = (e: ClipboardEvent) => {
-      e.preventDefault();
-      return false;
-    };
-
-    const preventContextMenu = (e: MouseEvent) => {
-      e.preventDefault();
-      return false;
-    };
-
-    const preventSelect = (e: Event) => {
-      e.preventDefault();
-      return false;
-    };
-
-    const preventDrag = (e: DragEvent) => {
-      e.preventDefault();
-      return false;
-    };
-
-    const preventKeyDown = (e: KeyboardEvent) => {
-      // Prevent common copy shortcuts
-      if ((e.ctrlKey || e.metaKey) && (
-        e.key === 'c' || // Copy
-        e.key === 'v' || // Paste
-        e.key === 'x' || // Cut
-        e.key === 'a'    // Select all
-      )) {
-        e.preventDefault();
-        return false;
-      }
-    };
-
-    // Add event listeners
-    document.addEventListener('copy', preventCopyPaste);
-    document.addEventListener('paste', preventCopyPaste);
-    document.addEventListener('cut', preventCopyPaste);
-    document.addEventListener('contextmenu', preventContextMenu);
-    document.addEventListener('selectstart', preventSelect);
-    document.addEventListener('dragstart', preventDrag);
-    document.addEventListener('keydown', preventKeyDown);
-
-    // Add CSS to prevent text selection
-    const style = document.createElement('style');
-    style.textContent = `
-      * {
-        -webkit-user-select: none !important;
-        -moz-user-select: none !important;
-        -ms-user-select: none !important;
-        user-select: none !important;
-      }
-    `;
-    document.head.appendChild(style);
-
-    return () => {
-      // Remove event listeners
-      document.removeEventListener('copy', preventCopyPaste);
-      document.removeEventListener('paste', preventCopyPaste);
-      document.removeEventListener('cut', preventCopyPaste);
-      document.removeEventListener('contextmenu', preventContextMenu);
-      document.removeEventListener('selectstart', preventSelect);
-      document.removeEventListener('dragstart', preventDrag);
-      document.removeEventListener('keydown', preventKeyDown);
-      // Remove style
-      document.head.removeChild(style);
-    };
-  }, []);
 
   // Add real-time player data sync
   useEffect(() => {
@@ -320,189 +190,17 @@ export default function Combat() {
     setOpponentHealth(MAX_HEALTH);
   };
 
-  // Queue timeout effect
-  useEffect(() => {
-    let timer: NodeJS.Timeout;
-    if (isInQueue && !opponent) {
-      timer = setInterval(() => {
-        setQueueTime((prev) => {
-          if (prev <= 1) {
-            clearInterval(timer);
-            leaveQueue();
-            setBattleLog(['Queue timed out. No players found.']);
-            return 50;
-          }
-          return prev - 1;
-        });
-      }, 1000);
-    } else {
-      setQueueTime(50);
-    }
-
-    return () => {
-      if (timer) clearInterval(timer);
-    };
-  }, [isInQueue, opponent]);
-
-  // Add queue state effect
-  useEffect(() => {
-    const fetchQueueState = async () => {
-      if (!user) return;
-
-      try {
-        const playerRef = doc(db, 'players', user.uid);
-        const playerDoc = await getDoc(playerRef);
-        const playerData = playerDoc.data();
-        
-        if (playerData?.inQueue) {
-          setIsInQueue(true);
-          setBattleLog(['You are already in queue!']);
-          setQueueTime(50);
-          setCanLeaveQueue(true);
-          setQueueCooldown(0);
-        }
-      } catch (error) {
-        console.error('Error fetching queue state:', error);
-      }
-    };
-
-    fetchQueueState();
-  }, [user]);
-
-  const joinQueue = async () => {
-    if (!user) return;
-    if (isInQueue) {
-      setBattleLog(prev => [...prev, 'You are already in queue!']);
-      return;
-    }
-
-    try {
-      const playerRef = doc(db, 'players', user.uid);
-      await updateDoc(playerRef, {
-        inQueue: true,
-        lastMatch: serverTimestamp()
-      });
-      setIsInQueue(true);
-      setBattleLog(prev => [...prev, 'Joined queue!']);
-      setQueueTime(0);
-      const timer = setInterval(() => {
-        setQueueTime(prev => prev + 1);
-      }, 1000);
-      setQueueTimer(timer);
-
-      // Initial opponent search - simplified to find any available player
-      const q = query(
-        collection(db, 'players'),
-        where('inQueue', '==', true),
-        where('uid', '!=', user.uid)
-      );
-
-      const querySnapshot = await getDocs(q);
-      const potentialOpponents = querySnapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      } as Player));
-
-      if (potentialOpponents.length > 0) {
-        // Just pick the first available opponent
-        const opponent = potentialOpponents[0];
-
-        // Update both players' queue status
-        const opponentRef = doc(db, 'players', opponent.id);
-        await updateDoc(opponentRef, {
-          inQueue: false,
-          lastMatch: serverTimestamp()
-        });
-        await updateDoc(playerRef, {
-          inQueue: false,
-          lastMatch: serverTimestamp()
-        });
-
-        setMatchFound(true);
-        setOpponent(opponent);
-        setBattleLog([
-          'Match Found!',
-          `Opponent: ${opponent.username || opponent.email?.split('@')[0] || 'Anonymous'}`,
-          `Power Level: ${opponent.power}`
-        ]);
-      } else {
-        setBattleLog(['Searching for opponent...']);
-      }
-    } catch (error) {
-      console.error('Error joining queue:', error);
-      setBattleLog(prev => [...prev, 'Failed to join queue. Please try again.']);
-      setIsInQueue(false);
-    } finally {
-      setIsSearching(false);
-    }
+  const handleMatchFound = (opponent: Player) => {
+    setOpponent(opponent);
+    setBattleLog([
+      'Match Found!',
+      `Opponent: ${opponent.username || opponent.email?.split('@')[0] || 'Anonymous'}`,
+      `Power Level: ${opponent.power}`
+    ]);
   };
 
-  const leaveQueue = async () => {
-    if (!user) return;
-    
-    try {
-      const playerRef = doc(db, 'players', user.uid);
-      
-      if (opponent) {
-        // If in a match, handle surrender
-        const opponentRef = doc(db, 'players', opponent.id);
-        await updateDoc(playerRef, {
-          losses: increment(1),
-          inQueue: false,
-          lastMatch: serverTimestamp(),
-          winStreak: 0
-        });
-
-        await updateDoc(opponentRef, {
-          wins: increment(1),
-          inQueue: false,
-          lastMatch: serverTimestamp()
-        });
-
-        // Record the match
-        await addDoc(collection(db, 'matches'), {
-          player1Id: user.uid,
-          player2Id: opponent.id,
-          player1Power: playerPower,
-          player2Power: opponent.power,
-          winner: opponent.id,
-          powerGained: 0,
-          timestamp: serverTimestamp()
-        } as MatchData);
-
-        setBattleLog(['You surrendered the match!']);
-      } else {
-        // Just leave queue if not in a match
-        await updateDoc(playerRef, {
-          inQueue: false
-        });
-        setBattleLog(['Left the queue']);
-      }
-
-      setIsInQueue(false);
-      setOpponent(null);
-      resetHealth();
-      setQueueTime(50);
-      setCanLeaveQueue(true);
-      setQueueCooldown(0);
-      setMatchFound(false);
-    } catch (error) {
-      console.error('Error leaving queue:', error);
-      setBattleLog(prev => [...prev, 'Failed to leave queue. Please try again.']);
-    }
-  };
-
-  const addDamageNumber = (value: number, isPlayer: boolean) => {
-    const id = Date.now();
-    const x = Math.random() * 100 - 50; // Random x offset
-    const y = isPlayer ? -50 : 50; // Different y positions for player and opponent
-    setDamageNumbers(prev => [...prev, { id, value, x, y, isPlayer }]);
-  };
-
-  const formatTime = (seconds: number) => {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  const handleQueueUpdate = (inQueue: boolean) => {
+    setIsInQueue(inQueue);
   };
 
   const attack = async () => {
@@ -692,6 +390,78 @@ export default function Combat() {
     }
   };
 
+  const leaveQueue = async () => {
+    if (!user) return;
+    
+    try {
+      const playerRef = doc(db, 'players', user.uid);
+      
+      if (opponent) {
+        // If in a match, handle surrender
+        const opponentRef = doc(db, 'players', opponent.id);
+        await updateDoc(playerRef, {
+          losses: increment(1),
+          inQueue: false,
+          lastMatch: serverTimestamp(),
+          winStreak: 0
+        });
+
+        await updateDoc(opponentRef, {
+          wins: increment(1),
+          inQueue: false,
+          lastMatch: serverTimestamp()
+        });
+
+        // Record the match
+        await addDoc(collection(db, 'matches'), {
+          player1Id: user.uid,
+          player2Id: opponent.id,
+          player1Power: playerPower,
+          player2Power: opponent.power,
+          winner: opponent.id,
+          powerGained: 0,
+          timestamp: serverTimestamp()
+        } as MatchData);
+
+        setBattleLog(['You surrendered the match!']);
+      } else {
+        // Just leave queue if not in a match
+        await updateDoc(playerRef, {
+          inQueue: false,
+          lastMatch: serverTimestamp()
+        });
+        setBattleLog(['Left the queue']);
+      }
+
+      // Reset all state
+      setIsInQueue(false);
+      setOpponent(null);
+      resetHealth();
+      setBattleTimer(0);
+      setDamageNumbers([]);
+      setLastDamage({ player: 0, opponent: 0 });
+    } catch (error) {
+      console.error('Error leaving queue:', error);
+      // Force reset state even if update fails
+      setIsInQueue(false);
+      setOpponent(null);
+      setBattleLog(['Failed to leave queue. Please try again.']);
+    }
+  };
+
+  const addDamageNumber = (value: number, isPlayer: boolean) => {
+    const id = Date.now();
+    const x = Math.random() * 100 - 50; // Random x offset
+    const y = isPlayer ? -50 : 50; // Different y positions for player and opponent
+    setDamageNumbers(prev => [...prev, { id, value, x, y, isPlayer }]);
+  };
+
+  const formatTime = (seconds: number) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
+
   if (loading) {
     return (
       <div className="text-cyber-blue text-center">Loading combat data...</div>
@@ -699,24 +469,7 @@ export default function Combat() {
   }
 
   return (
-    <div 
-      className="space-y-4 max-w-2xl mx-auto px-4 py-4" 
-      onCopy={(e) => e.preventDefault()} 
-      onPaste={(e) => e.preventDefault()} 
-      onCut={(e) => e.preventDefault()}
-      onContextMenu={(e) => e.preventDefault()}
-      onDragStart={(e) => e.preventDefault()}
-      onKeyDown={(e) => {
-        if ((e.ctrlKey || e.metaKey) && (
-          e.key === 'c' || 
-          e.key === 'v' || 
-          e.key === 'x' || 
-          e.key === 'a'
-        )) {
-          e.preventDefault();
-        }
-      }}
-    >
+    <div className="space-y-4 max-w-2xl mx-auto px-4 py-4">
       {/* Power Display */}
       <div className="flex flex-col sm:flex-row justify-between items-center gap-2 bg-cyber-black rounded-lg p-3">
         <div className="text-cyber-blue text-center sm:text-left w-full sm:w-auto text-lg">
@@ -733,41 +486,7 @@ export default function Combat() {
       <div className="bg-cyber-black rounded-lg p-4">
         <div className="space-y-4">
           {!opponent ? (
-            <div className="space-y-4">
-              {!isInQueue ? (
-                <div className="space-y-4">
-                  <button
-                    onClick={joinQueue}
-                    disabled={isSearching}
-                    className="w-full px-6 py-4 bg-cyber-pink text-white rounded-lg font-press-start hover:bg-cyber-purple transition-colors disabled:opacity-50 text-lg"
-                  >
-                    {isSearching ? 'Searching...' : 'Enter Queue'}
-                  </button>
-                </div>
-              ) : (
-                <div className="space-y-4">
-                  <div className="text-cyber-yellow text-center text-lg">
-                    Searching for Opponent...
-                  </div>
-                  {!matchFound && (
-                    <div className="space-y-2">
-                      <div className="text-cyber-blue text-center">
-                        Queue Position: {queuePosition}
-                      </div>
-                      <div className="text-cyber-blue text-center">
-                        Estimated Time: {estimatedTime}s
-                      </div>
-                    </div>
-                  )}
-                  <button
-                    onClick={leaveQueue}
-                    className="w-full px-6 py-4 bg-cyber-black border-2 border-cyber-pink text-cyber-pink rounded-lg font-press-start hover:bg-cyber-purple transition-colors text-lg"
-                  >
-                    Leave Queue
-                  </button>
-                </div>
-              )}
-            </div>
+            <Queue onMatchFound={handleMatchFound} onQueueUpdate={handleQueueUpdate} />
           ) : (
             <div className="space-y-4">
               <div className="text-cyber-yellow text-center text-lg font-bold">
