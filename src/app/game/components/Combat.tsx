@@ -328,7 +328,7 @@ export default function Combat() {
       setInQueue(true);
       setBattleLog(['Entering matchmaking queue...']);
 
-      // Initial opponent search
+      // Initial opponent search - simplified to find any available player
       const q = query(
         collection(db, 'players'),
         where('inQueue', '==', true),
@@ -342,16 +342,11 @@ export default function Combat() {
       } as Player));
 
       if (potentialOpponents.length > 0) {
-        // Find closest power level opponent
-        const playerPower = (await getDoc(playerRef)).data()?.power || 0;
-        const closestOpponent = potentialOpponents.reduce((closest, current) => {
-          const currentDiff = Math.abs(current.power - playerPower);
-          const closestDiff = Math.abs(closest.power - playerPower);
-          return currentDiff < closestDiff ? current : closest;
-        });
+        // Just pick the first available opponent
+        const opponent = potentialOpponents[0];
 
         // Update both players' queue status
-        const opponentRef = doc(db, 'players', closestOpponent.id);
+        const opponentRef = doc(db, 'players', opponent.id);
         await updateDoc(opponentRef, {
           inQueue: false,
           lastMatch: serverTimestamp()
@@ -362,11 +357,11 @@ export default function Combat() {
         });
 
         setMatchFound(true);
-        setOpponent(closestOpponent);
+        setOpponent(opponent);
         setBattleLog([
           'Match Found!',
-          `Opponent: ${closestOpponent.username || closestOpponent.email?.split('@')[0] || 'Anonymous'}`,
-          `Power Level: ${closestOpponent.power}`
+          `Opponent: ${opponent.username || opponent.email?.split('@')[0] || 'Anonymous'}`,
+          `Power Level: ${opponent.power}`
         ]);
       } else {
         setBattleLog(['Searching for opponent...']);

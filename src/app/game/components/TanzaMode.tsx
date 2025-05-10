@@ -55,6 +55,10 @@ export default function TanzaMode() {
   const [battleLog, setBattleLog] = useState<string[]>([]);
   const [isInCombat, setIsInCombat] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const [isOnCooldown, setIsOnCooldown] = useState(false);
+  const [cooldownTime, setCooldownTime] = useState(0);
+  const [lastTextTime, setLastTextTime] = useState<number>(0);
+  const MIN_TIME_BETWEEN_TEXTS = 5000; // 5 seconds minimum between texts
 
   useEffect(() => {
     const fetchPlayerData = async () => {
@@ -98,7 +102,32 @@ export default function TanzaMode() {
     }
   };
 
+  // Add cooldown effect
+  useEffect(() => {
+    let timer: NodeJS.Timeout;
+    if (cooldownTime > 0) {
+      timer = setInterval(() => {
+        setCooldownTime(prev => {
+          if (prev <= 1) {
+            setIsOnCooldown(false);
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+    }
+    return () => {
+      if (timer) clearInterval(timer);
+    };
+  }, [cooldownTime]);
+
   const startNewText = () => {
+    const now = Date.now();
+    if (now - lastTextTime < MIN_TIME_BETWEEN_TEXTS) {
+      setBattleLog(['Please wait before starting a new text!']);
+      return;
+    }
+
     const randomIndex = Math.floor(Math.random() * SAMPLE_TEXTS.length);
     setCurrentText(SAMPLE_TEXTS[randomIndex]);
     setUserInput('');
@@ -107,6 +136,7 @@ export default function TanzaMode() {
     setWpm(0);
     setAccuracy(0);
     setIsTyping(false);
+    setLastTextTime(now);
     if (inputRef.current) {
       inputRef.current.focus();
     }
@@ -150,9 +180,23 @@ export default function TanzaMode() {
     if (calculatedAccuracy >= 90) {
       const powerGain = calculatedWpm;
       updatePlayerPower(powerGain);
+      
+      // Add cooldown after successful completion
+      setIsOnCooldown(true);
+      setCooldownTime(3); // 3 seconds cooldown
+      
+      // Automatically start new text after a short delay
+      setTimeout(() => {
+        if (!isOnCooldown) {
+          startNewText();
+        }
+      }, 1000);
     } else {
       // Reset win streak on failure
       resetWinStreak();
+      // Add longer cooldown on failure
+      setIsOnCooldown(true);
+      setCooldownTime(5); // 5 seconds cooldown on failure
     }
   };
 
@@ -323,16 +367,19 @@ export default function TanzaMode() {
               onPaste={handlePaste}
               placeholder="Start typing here..."
               className="w-full h-32 p-4 bg-cyber-black border-2 border-cyber-pink text-cyber-blue rounded-lg font-mono resize-none focus:outline-none focus:border-cyber-purple"
-              disabled={!currentText}
+              disabled={!currentText || isOnCooldown}
             />
           </div>
 
           <div className="flex flex-col sm:flex-row justify-center gap-4">
             <button
               onClick={startNewText}
-              className="px-6 py-3 bg-cyber-pink text-white rounded-lg font-press-start hover:bg-cyber-purple transition-colors"
+              disabled={isOnCooldown}
+              className={`px-6 py-3 bg-cyber-pink text-white rounded-lg font-press-start 
+                hover:bg-cyber-purple transition-colors disabled:opacity-50
+                ${isOnCooldown ? 'cursor-not-allowed' : ''}`}
             >
-              Start New Text
+              {isOnCooldown ? `Wait ${cooldownTime}s` : 'Start New Text'}
             </button>
             {wpm > 0 && (
               <div className="text-cyber-blue text-center">
