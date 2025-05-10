@@ -5,9 +5,19 @@ import { useAuth } from '@/lib/auth';
 import { db } from '@/lib/firebase';
 import { collection, query, where, getDocs, doc, updateDoc, increment } from 'firebase/firestore';
 
+interface Player {
+  id: string;
+  uid: string;
+  email?: string;
+  username?: string;
+  power: number;
+  wins?: number;
+  losses?: number;
+}
+
 export default function Combat({ playerPower }: { playerPower: number }) {
   const { user } = useAuth();
-  const [opponent, setOpponent] = useState<any>(null);
+  const [opponent, setOpponent] = useState<Player | null>(null);
   const [isSearching, setIsSearching] = useState(false);
   const [battleLog, setBattleLog] = useState<string[]>([]);
   const [isInCombat, setIsInCombat] = useState(false);
@@ -34,13 +44,13 @@ export default function Combat({ playerPower }: { playerPower: number }) {
       const potentialOpponents = querySnapshot.docs.map(doc => ({
         id: doc.id,
         ...doc.data()
-      }));
+      } as Player));
 
       if (potentialOpponents.length > 0) {
         // Randomly select an opponent
         const randomIndex = Math.floor(Math.random() * potentialOpponents.length);
         setOpponent(potentialOpponents[randomIndex]);
-        setBattleLog(prev => [...prev, `Found opponent: ${potentialOpponents[randomIndex].username || 'Anonymous'}`]);
+        setBattleLog(prev => [...prev, `Found opponent: ${potentialOpponents[randomIndex].username || potentialOpponents[randomIndex].email?.split('@')[0] || 'Anonymous'}`]);
       } else {
         // If no opponents in range, find any opponent
         const allPlayersQuery = query(
@@ -51,12 +61,12 @@ export default function Combat({ playerPower }: { playerPower: number }) {
         const allPlayers = allPlayersSnapshot.docs.map(doc => ({
           id: doc.id,
           ...doc.data()
-        }));
+        } as Player));
 
         if (allPlayers.length > 0) {
           const randomIndex = Math.floor(Math.random() * allPlayers.length);
           setOpponent(allPlayers[randomIndex]);
-          setBattleLog(prev => [...prev, `Found opponent: ${allPlayers[randomIndex].username || 'Anonymous'}`]);
+          setBattleLog(prev => [...prev, `Found opponent: ${allPlayers[randomIndex].username || allPlayers[randomIndex].email?.split('@')[0] || 'Anonymous'}`]);
         } else {
           setBattleLog(prev => [...prev, 'No opponents found. Try again later!']);
         }
