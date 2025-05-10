@@ -25,6 +25,8 @@ interface MatchData {
   timestamp: FieldValue;
 }
 
+const MAX_HEALTH = 100;
+
 export default function Combat() {
   const { user } = useAuth();
   const [playerPower, setPlayerPower] = useState(0);
@@ -32,6 +34,9 @@ export default function Combat() {
   const [isSearching, setIsSearching] = useState(false);
   const [battleLog, setBattleLog] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
+  const [playerHealth, setPlayerHealth] = useState(MAX_HEALTH);
+  const [opponentHealth, setOpponentHealth] = useState(MAX_HEALTH);
+  const [isInCombat, setIsInCombat] = useState(false);
 
   useEffect(() => {
     const fetchPlayerData = async () => {
@@ -51,10 +56,16 @@ export default function Combat() {
     fetchPlayerData();
   }, [user]);
 
+  const resetHealth = () => {
+    setPlayerHealth(MAX_HEALTH);
+    setOpponentHealth(MAX_HEALTH);
+  };
+
   const findOpponent = async () => {
     if (!user) return;
     setIsSearching(true);
     setBattleLog([]);
+    resetHealth();
 
     try {
       // First check if the current user exists in the players collection
@@ -113,7 +124,7 @@ export default function Combat() {
 
   const attack = async () => {
     if (!user || !opponent) return;
-    setIsSearching(true);
+    setIsInCombat(true);
 
     try {
       // Calculate attack and defense with more randomness
@@ -123,7 +134,23 @@ export default function Combat() {
       const attackPower = playerPower * attackRoll;
       const defensePower = opponent.power * defenseRoll;
 
-      if (attackPower > defensePower) {
+      // Calculate damage (20-40% of attack power)
+      const damagePercentage = 0.2 + Math.random() * 0.2;
+      const damage = Math.floor(attackPower * damagePercentage);
+      
+      // Apply damage to opponent
+      const newOpponentHealth = Math.max(0, opponentHealth - damage);
+      setOpponentHealth(newOpponentHealth);
+
+      setBattleLog(prev => [
+        ...prev,
+        `You attacked with ${Math.floor(attackPower)} power!`,
+        `Opponent defended with ${Math.floor(defensePower)} power!`,
+        `Dealt ${damage} damage!`
+      ]);
+
+      // Check if opponent is defeated
+      if (newOpponentHealth <= 0) {
         // Calculate variable power gain (5-15% of opponent's power)
         const powerGainPercentage = 0.05 + Math.random() * 0.1; // 5% to 15%
         const powerGain = Math.floor(opponent.power * powerGainPercentage);
@@ -156,49 +183,77 @@ export default function Combat() {
 
         setBattleLog(prev => [
           ...prev,
-          `You attacked with ${Math.floor(attackPower)} power!`,
-          `Opponent defended with ${Math.floor(defensePower)} power!`,
           `Victory! Gained ${powerGain} power!`
         ]);
         setPlayerPower(prev => prev + powerGain);
+        setOpponent(null);
       } else {
-        // Update player's losses
-        const playerRef = doc(db, 'players', user.uid);
-        await updateDoc(playerRef, {
-          losses: increment(1),
-          lastMatch: serverTimestamp()
-        });
+        // Opponent counter-attacks
+        const counterAttackRoll = Math.random() * 2;
+        const counterDefenseRoll = Math.random() * 2;
+        
+        const counterAttackPower = opponent.power * counterAttackRoll;
+        const counterDefensePower = playerPower * counterDefenseRoll;
 
-        // Update opponent's wins
-        const opponentRef = doc(db, 'players', opponent.id);
-        await updateDoc(opponentRef, {
-          wins: increment(1),
-          lastMatch: serverTimestamp()
-        });
+        if (counterAttackPower > counterDefensePower) {
+          const counterDamage = Math.floor(counterAttackPower * (0.2 + Math.random() * 0.2));
+          const newPlayerHealth = Math.max(0, playerHealth - counterDamage);
+          setPlayerHealth(newPlayerHealth);
 
-        // Record the match
-        await addDoc(collection(db, 'matches'), {
-          player1Id: user.uid,
-          player2Id: opponent.id,
-          player1Power: playerPower,
-          player2Power: opponent.power,
-          winner: opponent.id,
-          powerGained: 0,
-          timestamp: serverTimestamp()
-        } as MatchData);
+          setBattleLog(prev => [
+            ...prev,
+            `Opponent counter-attacked with ${Math.floor(counterAttackPower)} power!`,
+            `You defended with ${Math.floor(counterDefensePower)} power!`,
+            `Took ${counterDamage} damage!`
+          ]);
 
-        setBattleLog(prev => [
-          ...prev,
-          `You attacked with ${Math.floor(attackPower)} power!`,
-          `Opponent defended with ${Math.floor(defensePower)} power!`,
-          'Defeat! Better luck next time!'
-        ]);
+          // Check if player is defeated
+          if (newPlayerHealth <= 0) {
+            // Update player's losses
+            const playerRef = doc(db, 'players', user.uid);
+            await updateDoc(playerRef, {
+              losses: increment(1),
+              lastMatch: serverTimestamp()
+            });
+
+            // Update opponent's wins
+            const opponentRef = doc(db, 'players', opponent.id);
+            await updateDoc(opponentRef, {
+              wins: increment(1),
+              lastMatch: serverTimestamp()
+            });
+
+            // Record the match
+            await addDoc(collection(db, 'matches'), {
+              player1Id: user.uid,
+              player2Id: opponent.id,
+              player1Power: playerPower,
+              player2Power: opponent.power,
+              winner: opponent.id,
+              powerGained: 0,
+              timestamp: serverTimestamp()
+            } as MatchData);
+
+            setBattleLog(prev => [
+              ...prev,
+              'You were defeated! Better luck next time!'
+            ]);
+            setOpponent(null);
+          }
+        } else {
+          setBattleLog(prev => [
+            ...prev,
+            `Opponent counter-attacked with ${Math.floor(counterAttackPower)} power!`,
+            `You defended with ${Math.floor(counterDefensePower)} power!`,
+            'You blocked the attack!'
+          ]);
+        }
       }
     } catch (error) {
       console.error('Error in combat:', error);
       setBattleLog(prev => [...prev, 'Error in combat. Try again!']);
     } finally {
-      setIsSearching(false);
+      setIsInCombat(false);
     }
   };
 
@@ -236,13 +291,42 @@ export default function Combat() {
               <div className="text-cyber-yellow">
                 Fighting against: {opponent.username || opponent.email?.split('@')[0] || 'Anonymous'}
               </div>
+              
+              {/* Health Bars */}
+              <div className="space-y-2">
+                <div>
+                  <div className="flex justify-between text-sm mb-1">
+                    <span className="text-cyber-blue">Your Health</span>
+                    <span className="text-cyber-blue">{playerHealth}/{MAX_HEALTH}</span>
+                  </div>
+                  <div className="h-4 bg-cyber-black border-2 border-cyber-blue rounded-full overflow-hidden">
+                    <div 
+                      className="h-full bg-cyber-blue transition-all duration-300"
+                      style={{ width: `${(playerHealth / MAX_HEALTH) * 100}%` }}
+                    />
+                  </div>
+                </div>
+                <div>
+                  <div className="flex justify-between text-sm mb-1">
+                    <span className="text-cyber-pink">Opponent Health</span>
+                    <span className="text-cyber-pink">{opponentHealth}/{MAX_HEALTH}</span>
+                  </div>
+                  <div className="h-4 bg-cyber-black border-2 border-cyber-pink rounded-full overflow-hidden">
+                    <div 
+                      className="h-full bg-cyber-pink transition-all duration-300"
+                      style={{ width: `${(opponentHealth / MAX_HEALTH) * 100}%` }}
+                    />
+                  </div>
+                </div>
+              </div>
+
               <div className="flex space-x-4">
                 <button
                   onClick={attack}
-                  disabled={isSearching}
+                  disabled={isInCombat}
                   className="flex-1 px-6 py-3 bg-cyber-pink text-white rounded-lg font-press-start hover:bg-cyber-purple transition-colors disabled:opacity-50"
                 >
-                  {isSearching ? 'Fighting...' : 'Attack!'}
+                  {isInCombat ? 'Fighting...' : 'Attack!'}
                 </button>
                 <button
                   onClick={() => setOpponent(null)}
