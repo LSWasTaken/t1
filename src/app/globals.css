@@ -1,0 +1,35 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --foreground-rgb: 255, 255, 255;
+  --background-start-rgb: 10, 10, 10;
+  --background-end-rgb: 0, 0, 0;
+}
+
+body {
+  color: rgb(var(--foreground-rgb));
+  background: linear-gradient(
+    to bottom,
+    rgb(var(--background-start-rgb)),
+    rgb(var(--background-end-rgb))
+  );
+  min-height: 100vh;
+}
+
+.neon-text {
+  text-shadow: 0 0 5px #fff,
+               0 0 10px #fff,
+               0 0 20px #ff00ff,
+               0 0 30px #ff00ff,
+               0 0 40px #ff00ff;
+}
+
+.neon-border {
+  box-shadow: 0 0 5px #fff,
+              0 0 10px #fff,
+              0 0 20px #00ffff,
+              0 0 30px #00ffff,
+              0 0 40px #00ffff;
+} 
