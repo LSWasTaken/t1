@@ -3,339 +3,438 @@
 import { useState, useEffect, useRef } from 'react';
 import { useAuth } from '@/lib/auth';
 import { db } from '@/lib/firebase';
-import { doc, getDoc, setDoc, updateDoc, increment, onSnapshot } from 'firebase/firestore';
-import { useRouter } from 'next/navigation';
-import Combat from './Combat';
-import Leaderboard from './Leaderboard';
+import { doc, getDoc, updateDoc, increment } from 'firebase/firestore';
 
 interface Obstacle {
   x: number;
-  height: number;
+  gapY: number;
+  gapHeight: number;
+  width: number;
   passed: boolean;
-  gap: number;
 }
 
 interface Bird {
+  x: number;
   y: number;
   velocity: number;
   rotation: number;
+  width: number;
+  height: number;
 }
+
+const GRAVITY = 0.5;
+const JUMP_FORCE = -10;
+const PIPE_SPEED = 2;
+const PIPE_SPAWN_INTERVAL = 1500;
+const GAP_HEIGHT = 150;
+const MIN_GAP_Y = 100;
+const MAX_GAP_Y = 400;
+const BIRD_SIZE = 40;
+const GROUND_HEIGHT = 100;
+const CLOUD_COUNT = 5;
 
 export default function ClickerGame() {
   const { user } = useAuth();
-  const router = useRouter();
   const [power, setPower] = useState(0);
-  const [isLoading, setIsLoading] = useState(true);
   const [gameStarted, setGameStarted] = useState(false);
   const [gameOver, setGameOver] = useState(false);
   const [score, setScore] = useState(0);
   const [highScore, setHighScore] = useState(0);
-  const [bird, setBird] = useState<Bird>({ y: 250, velocity: 0, rotation: 0 });
+  const [bird, setBird] = useState<Bird>({
+    x: 100,
+    y: 300,
+    velocity: 0,
+    rotation: 0,
+    width: BIRD_SIZE,
+    height: BIRD_SIZE
+  });
   const [obstacles, setObstacles] = useState<Obstacle[]>([]);
-  const [backgroundPosition, setBackgroundPosition] = useState(0);
+  const [clouds, setClouds] = useState<{ x: number; y: number; width: number }[]>([]);
+  const [backgroundOffset, setBackgroundOffset] = useState(0);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const gameLoopRef = useRef<number>();
-  const GRAVITY = 0.5;
-  const JUMP_FORCE = -10;
-  const OBSTACLE_SPEED = 3;
-  const OBSTACLE_SPAWN_INTERVAL = 2000;
-  const GAP_SIZE = 150;
-  const BIRD_SIZE = 30;
-  const OBSTACLE_WIDTH = 60;
+  const lastPipeSpawnRef = useRef<number>(0);
+  const frameCountRef = useRef<number>(0);
 
+  // Load player data
   useEffect(() => {
-    if (user) {
-      loadPlayerData();
-    }
+    const loadPlayerData = async () => {
+      if (!user) return;
+
+      try {
+        const playerRef = doc(db, 'players', user.uid);
+        const playerDoc = await getDoc(playerRef);
+        const playerData = playerDoc.data();
+        setPower(playerData?.power || 0);
+        setHighScore(playerData?.flappyHighScore || 0);
+      } catch (error) {
+        console.error('Error loading player data:', error);
+      }
+    };
+
+    loadPlayerData();
   }, [user]);
 
+  // Initialize clouds
   useEffect(() => {
-    if (!user) return;
+    const initialClouds = Array.from({ length: CLOUD_COUNT }, () => ({
+      x: Math.random() * window.innerWidth,
+      y: Math.random() * 200,
+      width: 100 + Math.random() * 100
+    }));
+    setClouds(initialClouds);
+  }, []);
 
-    const playerRef = doc(db, 'players', user.uid);
-    
-    const unsubscribe = onSnapshot(playerRef, (doc) => {
-      const playerData = doc.data();
-      if (playerData) {
-        setPower(playerData.power || 0);
-        setHighScore(playerData.highScore || 0);
+  // Game loop
+  useEffect(() => {
+    if (!gameStarted || gameOver) return;
+
+    const gameLoop = () => {
+      frameCountRef.current++;
+      
+      // Update bird
+      setBird(prev => {
+        const newVelocity = prev.velocity + GRAVITY;
+        const newY = prev.y + newVelocity;
+        const newRotation = Math.min(Math.max(newVelocity * 2, -30), 90);
+        
+        return {
+          ...prev,
+          y: newY,
+          velocity: newVelocity,
+          rotation: newRotation
+        };
+      });
+
+      // Update obstacles
+      setObstacles(prev => {
+        const now = Date.now();
+        const newObstacles = prev
+          .map(obstacle => ({
+            ...obstacle,
+            x: obstacle.x - PIPE_SPEED,
+            passed: obstacle.passed || obstacle.x + obstacle.width < bird.x
+          }))
+          .filter(obstacle => obstacle.x + obstacle.width > 0);
+
+        // Spawn new obstacle
+        if (now - lastPipeSpawnRef.current > PIPE_SPAWN_INTERVAL) {
+          lastPipeSpawnRef.current = now;
+          newObstacles.push({
+            x: window.innerWidth,
+            gapY: MIN_GAP_Y + Math.random() * (MAX_GAP_Y - MIN_GAP_Y),
+            gapHeight: GAP_HEIGHT,
+            width: 80,
+            passed: false
+          });
+        }
+
+        return newObstacles;
+      });
+
+      // Update clouds
+      setClouds(prev => 
+        prev.map(cloud => ({
+          ...cloud,
+          x: cloud.x - 0.5,
+          y: cloud.y + Math.sin(frameCountRef.current * 0.01) * 0.5
+        })).map(cloud => 
+          cloud.x + cloud.width < 0 
+            ? { ...cloud, x: window.innerWidth, y: Math.random() * 200 }
+            : cloud
+        )
+      );
+
+      // Update background
+      setBackgroundOffset(prev => (prev + 0.5) % window.innerWidth);
+
+      // Check collisions
+      const birdRect = {
+        x: bird.x - bird.width / 2,
+        y: bird.y - bird.height / 2,
+        width: bird.width,
+        height: bird.height
+      };
+
+      // Check ground collision
+      if (bird.y + bird.height / 2 > window.innerHeight - GROUND_HEIGHT) {
+        endGame();
+        return;
       }
+
+      // Check ceiling collision
+      if (bird.y - bird.height / 2 < 0) {
+        endGame();
+        return;
+      }
+
+      // Check pipe collisions
+      for (const obstacle of obstacles) {
+        const topPipe = {
+          x: obstacle.x,
+          y: 0,
+          width: obstacle.width,
+          height: obstacle.gapY
+        };
+        const bottomPipe = {
+          x: obstacle.x,
+          y: obstacle.gapY + obstacle.gapHeight,
+          width: obstacle.width,
+          height: window.innerHeight - (obstacle.gapY + obstacle.gapHeight)
+        };
+
+        if (
+          checkCollision(birdRect, topPipe) ||
+          checkCollision(birdRect, bottomPipe)
+        ) {
+          endGame();
+          return;
+        }
+
+        // Update score
+        if (!obstacle.passed && obstacle.x + obstacle.width < bird.x) {
+          setScore(prev => prev + 1);
+        }
+      }
+
+      // Draw everything
+      draw();
+      gameLoopRef.current = requestAnimationFrame(gameLoop);
+    };
+
+    gameLoopRef.current = requestAnimationFrame(gameLoop);
+    return () => {
+      if (gameLoopRef.current) {
+        cancelAnimationFrame(gameLoopRef.current);
+      }
+    };
+  }, [gameStarted, gameOver, bird, obstacles]);
+
+  const checkCollision = (rect1: any, rect2: any) => {
+    return (
+      rect1.x < rect2.x + rect2.width &&
+      rect1.x + rect1.width > rect2.x &&
+      rect1.y < rect2.y + rect2.height &&
+      rect1.y + rect1.height > rect2.y
+    );
+  };
+
+  const draw = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    // Set canvas size
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+
+    // Clear canvas
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // Draw background
+    ctx.fillStyle = '#87CEEB';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // Draw clouds
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+    clouds.forEach(cloud => {
+      ctx.beginPath();
+      ctx.arc(cloud.x, cloud.y, cloud.width / 2, 0, Math.PI * 2);
+      ctx.arc(cloud.x + cloud.width / 3, cloud.y - cloud.width / 4, cloud.width / 3, 0, Math.PI * 2);
+      ctx.arc(cloud.x + cloud.width / 2, cloud.y, cloud.width / 3, 0, Math.PI * 2);
+      ctx.fill();
     });
 
-    return () => unsubscribe();
-  }, [user]);
-
-  const loadPlayerData = async () => {
-    if (!user) return;
-
-    try {
-      const playerRef = doc(db, 'players', user.uid);
-      const playerDoc = await getDoc(playerRef);
-
-      if (playerDoc.exists()) {
-        const data = playerDoc.data();
-        setPower(data.power || 0);
-        setHighScore(data.highScore || 0);
-      } else {
-        await setDoc(playerRef, {
-          uid: user.uid,
-          email: user.email,
-          power: 0,
-          highScore: 0,
-          wins: 0,
-          losses: 0,
-          username: user.email?.split('@')[0] || 'Anonymous',
-        });
+    // Draw ground
+    const groundCanvas = createGroundPattern(ctx);
+    if (groundCanvas) {
+      const groundPattern = ctx.createPattern(groundCanvas, 'repeat-x');
+      if (groundPattern) {
+        ctx.fillStyle = groundPattern;
+        ctx.fillRect(0, canvas.height - GROUND_HEIGHT, canvas.width, GROUND_HEIGHT);
       }
-    } catch (error) {
-      console.error('Error loading player data:', error);
-    } finally {
-      setIsLoading(false);
     }
+
+    // Draw obstacles
+    obstacles.forEach(obstacle => {
+      // Draw top pipe
+      ctx.fillStyle = '#2E8B57';
+      ctx.fillRect(obstacle.x, 0, obstacle.width, obstacle.gapY);
+      ctx.fillStyle = '#1B4D3E';
+      ctx.fillRect(obstacle.x - 5, obstacle.gapY - 20, obstacle.width + 10, 20);
+
+      // Draw bottom pipe
+      ctx.fillStyle = '#2E8B57';
+      ctx.fillRect(
+        obstacle.x,
+        obstacle.gapY + obstacle.gapHeight,
+        obstacle.width,
+        canvas.height - (obstacle.gapY + obstacle.gapHeight)
+      );
+      ctx.fillStyle = '#1B4D3E';
+      ctx.fillRect(
+        obstacle.x - 5,
+        obstacle.gapY + obstacle.gapHeight,
+        obstacle.width + 10,
+        20
+      );
+    });
+
+    // Draw bird
+    ctx.save();
+    ctx.translate(bird.x, bird.y);
+    ctx.rotate((bird.rotation * Math.PI) / 180);
+    ctx.fillStyle = '#FFD700';
+    ctx.beginPath();
+    ctx.arc(0, 0, bird.width / 2, 0, Math.PI * 2);
+    ctx.fill();
+    
+    // Draw bird details
+    ctx.fillStyle = '#000';
+    ctx.beginPath();
+    ctx.arc(10, -5, 5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#FF4500';
+    ctx.beginPath();
+    ctx.moveTo(15, 0);
+    ctx.lineTo(25, -5);
+    ctx.lineTo(25, 5);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+
+    // Draw score
+    ctx.fillStyle = '#000';
+    ctx.font = '48px "Press Start 2P"';
+    ctx.textAlign = 'center';
+    ctx.fillText(score.toString(), canvas.width / 2, 100);
+
+    // Draw game over screen
+    if (gameOver) {
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = '#FFF';
+      ctx.font = '48px "Press Start 2P"';
+      ctx.textAlign = 'center';
+      ctx.fillText('Game Over!', canvas.width / 2, canvas.height / 2 - 50);
+      ctx.font = '24px "Press Start 2P"';
+      ctx.fillText(`Score: ${score}`, canvas.width / 2, canvas.height / 2);
+      ctx.fillText(`High Score: ${highScore}`, canvas.width / 2, canvas.height / 2 + 50);
+    }
+  };
+
+  const createGroundPattern = (ctx: CanvasRenderingContext2D) => {
+    const patternCanvas = document.createElement('canvas');
+    patternCanvas.width = 100;
+    patternCanvas.height = 20;
+    const patternCtx = patternCanvas.getContext('2d');
+    if (!patternCtx) return null;
+
+    patternCtx.fillStyle = '#8B4513';
+    patternCtx.fillRect(0, 0, 100, 20);
+    patternCtx.fillStyle = '#A0522D';
+    for (let i = 0; i < 5; i++) {
+      patternCtx.fillRect(i * 20, 0, 10, 20);
+    }
+
+    return patternCanvas;
   };
 
   const startGame = () => {
     setGameStarted(true);
     setGameOver(false);
     setScore(0);
-    setBird({ y: 250, velocity: 0, rotation: 0 });
+    setBird({
+      x: 100,
+      y: 300,
+      velocity: 0,
+      rotation: 0,
+      width: BIRD_SIZE,
+      height: BIRD_SIZE
+    });
     setObstacles([]);
-    setBackgroundPosition(0);
-    gameLoopRef.current = requestAnimationFrame(gameLoop);
-    spawnObstacle();
+    lastPipeSpawnRef.current = Date.now();
+    frameCountRef.current = 0;
   };
 
-  const gameLoop = () => {
-    if (!gameStarted || gameOver || !canvasRef.current) return;
-
-    const canvas = canvasRef.current;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    // Clear canvas
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-    // Draw background
-    ctx.fillStyle = '#1a1a1a';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-    // Draw scrolling background
-    setBackgroundPosition(prev => (prev - 1) % canvas.width);
-    ctx.fillStyle = '#2a2a2a';
-    for (let i = 0; i < canvas.width; i += 50) {
-      ctx.fillRect((i + backgroundPosition) % canvas.width, 0, 2, canvas.height);
-    }
-
-    // Update bird
-    setBird(prev => {
-      const newY = prev.y + prev.velocity;
-      const newRotation = Math.min(Math.max(prev.velocity * 5, -30), 30);
-      
-      if (newY < 0 || newY > canvas.height) {
-        endGame();
-        return prev;
+  const endGame = async () => {
+    setGameOver(true);
+    setGameStarted(false);
+    
+    if (score > highScore) {
+      setHighScore(score);
+      if (user) {
+        try {
+          const playerRef = doc(db, 'players', user.uid);
+          await updateDoc(playerRef, {
+            flappyHighScore: score,
+            power: increment(Math.floor(score / 2))
+          });
+          setPower(prev => prev + Math.floor(score / 2));
+        } catch (error) {
+          console.error('Error updating high score:', error);
+        }
       }
-      
-      return {
-        y: newY,
-        velocity: prev.velocity + GRAVITY,
-        rotation: newRotation
-      };
-    });
-
-    // Draw bird
-    ctx.save();
-    ctx.translate(50, bird.y);
-    ctx.rotate((bird.rotation * Math.PI) / 180);
-    ctx.fillStyle = '#ff69b4';
-    ctx.beginPath();
-    ctx.arc(0, 0, BIRD_SIZE / 2, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = '#fff';
-    ctx.beginPath();
-    ctx.arc(-5, -5, 3, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
-
-    // Update obstacles
-    setObstacles(prev => {
-      const newObstacles = prev.map(obs => ({
-        ...obs,
-        x: obs.x - OBSTACLE_SPEED,
-        passed: obs.passed || obs.x < 50
-      })).filter(obs => obs.x > -OBSTACLE_WIDTH);
-
-      // Check for collisions
-      newObstacles.forEach(obs => {
-        if (obs.x < 50 + BIRD_SIZE && obs.x + OBSTACLE_WIDTH > 50 - BIRD_SIZE) {
-          if (bird.y < obs.height - GAP_SIZE/2 || bird.y > obs.height + GAP_SIZE/2) {
-            endGame();
-          }
-        }
-        // Award power for passing obstacles
-        if (!obs.passed && obs.x < 50) {
-          awardPower();
-          setScore(s => s + 1);
-        }
-      });
-
-      return newObstacles;
-    });
-
-    // Draw obstacles
-    obstacles.forEach(obs => {
-      // Top pipe
-      ctx.fillStyle = '#4CAF50';
-      ctx.fillRect(obs.x, 0, OBSTACLE_WIDTH, obs.height - GAP_SIZE/2);
-      ctx.fillStyle = '#388E3C';
-      ctx.fillRect(obs.x - 5, obs.height - GAP_SIZE/2 - 20, OBSTACLE_WIDTH + 10, 20);
-
-      // Bottom pipe
-      ctx.fillStyle = '#4CAF50';
-      ctx.fillRect(obs.x, obs.height + GAP_SIZE/2, OBSTACLE_WIDTH, canvas.height);
-      ctx.fillStyle = '#388E3C';
-      ctx.fillRect(obs.x - 5, obs.height + GAP_SIZE/2, OBSTACLE_WIDTH + 10, 20);
-    });
-
-    // Draw score
-    ctx.fillStyle = '#fff';
-    ctx.font = '24px "Press Start 2P"';
-    ctx.textAlign = 'center';
-    ctx.fillText(score.toString(), canvas.width / 2, 50);
-
-    gameLoopRef.current = requestAnimationFrame(gameLoop);
-  };
-
-  const spawnObstacle = () => {
-    if (!gameStarted || gameOver || !canvasRef.current) return;
-
-    const height = Math.random() * (canvasRef.current.height - GAP_SIZE - 100) + 50;
-    setObstacles(prev => [...prev, { x: canvasRef.current!.width, height, passed: false, gap: GAP_SIZE }]);
-    setTimeout(spawnObstacle, OBSTACLE_SPAWN_INTERVAL);
+    }
   };
 
   const handleJump = () => {
     if (!gameStarted) {
       startGame();
     }
-    setBird(prev => ({
-      ...prev,
-      velocity: JUMP_FORCE
-    }));
-  };
-
-  const awardPower = async () => {
-    if (!user) return;
-    try {
-      const playerRef = doc(db, 'players', user.uid);
-      await updateDoc(playerRef, {
-        power: increment(1)
-      });
-      setPower(prev => prev + 1);
-    } catch (error) {
-      console.error('Error updating power:', error);
+    if (!gameOver) {
+      setBird(prev => ({
+        ...prev,
+        velocity: JUMP_FORCE
+      }));
     }
   };
-
-  const endGame = async () => {
-    setGameOver(true);
-    setGameStarted(false);
-    if (gameLoopRef.current) {
-      cancelAnimationFrame(gameLoopRef.current);
-    }
-
-    if (!user) return;
-    try {
-      const playerRef = doc(db, 'players', user.uid);
-      if (score > highScore) {
-        await updateDoc(playerRef, {
-          highScore: score
-        });
-        setHighScore(score);
-      }
-    } catch (error) {
-      console.error('Error updating high score:', error);
-    }
-  };
-
-  if (isLoading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-cyber-black text-white">
-        <div className="text-2xl font-press-start text-cyber-pink">Loading...</div>
-      </div>
-    );
-  }
 
   return (
-    <main className="min-h-screen p-4 bg-cyber-black text-white">
-      <div className="max-w-4xl mx-auto">
-        <div className="flex justify-between items-center mb-8">
-          <h1 className="text-3xl font-press-start text-cyber-pink">
-            Tanza Fighter
-          </h1>
+    <div className="relative w-full h-full">
+      <canvas
+        ref={canvasRef}
+        className="absolute inset-0"
+        onClick={handleJump}
+        onTouchStart={handleJump}
+      />
+      {!gameStarted && !gameOver && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black bg-opacity-50">
+          <h2 className="text-4xl font-press-start text-cyber-pink mb-8">
+            Flappy Bird
+          </h2>
           <button
-            onClick={() => router.push('/profile')}
-            className="px-4 py-2 bg-cyber-blue text-white rounded-lg font-press-start hover:bg-cyber-purple transition-colors"
+            onClick={startGame}
+            className="px-8 py-4 bg-cyber-pink text-white rounded-lg font-press-start hover:bg-cyber-purple transition-colors text-xl"
           >
-            Profile
+            Start Game
           </button>
         </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <div className="space-y-6">
-            <div className="bg-cyber-dark rounded-lg p-6">
-              <h2 className="text-2xl font-press-start text-cyber-pink mb-4">
-                Your Power: {power}
-              </h2>
-              <div className="text-cyber-blue mb-4">
-                Score: {score} | High Score: {highScore}
-              </div>
-              <div className="relative">
-                <canvas
-                  ref={canvasRef}
-                  width={800}
-                  height={600}
-                  className="w-full bg-cyber-black border-2 border-cyber-pink rounded-lg"
-                  onClick={handleJump}
-                />
-
-                {/* Game Over Screen */}
-                {gameOver && (
-                  <div className="absolute inset-0 flex flex-col items-center justify-center bg-cyber-black bg-opacity-80">
-                    <div className="text-2xl font-press-start text-cyber-pink mb-4">
-                      Game Over!
-                    </div>
-                    <button
-                      onClick={startGame}
-                      className="px-6 py-3 bg-cyber-pink text-white rounded-lg font-press-start hover:bg-cyber-purple transition-colors"
-                    >
-                      Play Again
-                    </button>
-                  </div>
-                )}
-
-                {/* Start Screen */}
-                {!gameStarted && !gameOver && (
-                  <div className="absolute inset-0 flex flex-col items-center justify-center">
-                    <div className="text-2xl font-press-start text-cyber-pink mb-4">
-                      Click to Start
-                    </div>
-                    <div className="text-cyber-blue text-center">
-                      Click to flap and dodge obstacles!<br />
-                      Each obstacle passed gives you 1 power!
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
+      )}
+      {gameOver && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black bg-opacity-50">
+          <h2 className="text-4xl font-press-start text-cyber-pink mb-8">
+            Game Over!
+          </h2>
+          <div className="text-2xl font-press-start text-cyber-blue mb-8">
+            Score: {score}
           </div>
-
-          <div className="space-y-6">
-            <Combat />
-            <Leaderboard />
+          <div className="text-xl font-press-start text-cyber-blue mb-8">
+            High Score: {highScore}
           </div>
+          <button
+            onClick={startGame}
+            className="px-8 py-4 bg-cyber-pink text-white rounded-lg font-press-start hover:bg-cyber-purple transition-colors text-xl"
+          >
+            Play Again
+          </button>
         </div>
+      )}
+      <div className="absolute top-4 left-4 text-cyber-blue font-press-start">
+        Power: {power}
       </div>
-    </main>
+    </div>
   );
 } 
