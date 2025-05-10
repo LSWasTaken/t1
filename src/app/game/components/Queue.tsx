@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '@/lib/auth';
 import { db } from '@/lib/firebase';
 import { doc, updateDoc, serverTimestamp, collection, query, where, getDocs, getDoc, orderBy, onSnapshot, runTransaction } from 'firebase/firestore';
+import { useRouter } from 'next/navigation';
 
 interface QueueProps {
   onMatchFound: (opponent: any) => void;
@@ -24,6 +25,7 @@ interface Player {
 
 export default function Queue({ onMatchFound, onQueueUpdate }: QueueProps) {
   const { user } = useAuth();
+  const router = useRouter();
   const [isInQueue, setIsInQueue] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
   const [queueTime, setQueueTime] = useState(0);
@@ -38,6 +40,7 @@ export default function Queue({ onMatchFound, onQueueUpdate }: QueueProps) {
   const [challengeTimeout, setChallengeTimeout] = useState<NodeJS.Timeout | null>(null);
   const [recentOpponents, setRecentOpponents] = useState<Player[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   // Add log with timestamp
   const addLog = useCallback((message: string) => {
@@ -218,9 +221,13 @@ export default function Queue({ onMatchFound, onQueueUpdate }: QueueProps) {
       onQueueUpdate(false);
       onMatchFound(opponent);
       addLog(`Match found! You'll compete against ${opponent.username || 'Anonymous'} in a clicking speed challenge!`);
+
+      // Redirect to combat page with opponent ID
+      router.push(`/combat?opponent=${opponent.id}`);
     } catch (error) {
       console.error('Error handling match:', error);
       addLog('Error finding match. Please try again.');
+      setError('Failed to start match');
     }
   };
 
