@@ -13,6 +13,8 @@ interface Player {
   wins?: number;
   losses?: number;
   rank?: number;
+  winStreak: number;
+  inQueue: boolean;
 }
 
 export default function Leaderboard() {
@@ -20,73 +22,68 @@ export default function Leaderboard() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // Query for top 10 players by power
-    const q = query(
-      collection(db, 'players'),
-      orderBy('power', 'desc'),
-      limit(10)
-    );
+    const fetchPlayers = async () => {
+      try {
+        const q = query(
+          collection(db, 'players'),
+          orderBy('power', 'desc'),
+          limit(10)
+        );
 
-    // Set up real-time listener
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const playersData = snapshot.docs.map((doc, index) => ({
-        id: doc.id,
-        ...doc.data(),
-        rank: index + 1
-      } as Player));
-      
-      setPlayers(playersData);
-      setLoading(false);
-    }, (error) => {
-      console.error('Error fetching leaderboard:', error);
-      setLoading(false);
-    });
+        const unsubscribe = onSnapshot(q, (snapshot) => {
+          const playersData = snapshot.docs.map(doc => ({
+            id: doc.id,
+            ...doc.data()
+          } as Player));
+          setPlayers(playersData);
+          setLoading(false);
+        });
 
-    // Cleanup subscription
-    return () => unsubscribe();
+        return () => unsubscribe();
+      } catch (error) {
+        console.error('Error fetching players:', error);
+        setLoading(false);
+      }
+    };
+
+    fetchPlayers();
   }, []);
 
-  if (loading) {
-    return (
-      <div className="bg-cyber-dark rounded-lg p-6">
-        <h3 className="text-2xl font-press-start text-cyber-pink mb-6 text-center">
-          Leaderboard
-        </h3>
-        <div className="text-cyber-blue text-center">Loading rankings...</div>
-      </div>
-    );
-  }
-
   return (
-    <div className="bg-cyber-dark rounded-lg p-6">
-      <h3 className="text-2xl font-press-start text-cyber-pink mb-6 text-center">
-        Leaderboard
-      </h3>
-      
-      <div className="space-y-2">
-        {players.map((player) => (
-          <div
-            key={player.id}
-            className="bg-cyber-black rounded-lg p-4 flex items-center justify-between"
-          >
-            <div className="flex items-center space-x-4">
-              <span className="text-cyber-pink font-press-start w-8">
-                #{player.rank}
-              </span>
-              <div>
-                <h4 className="text-cyber-blue font-press-start">
-                  {player.username || player.email?.split('@')[0] || 'Anonymous'}
-                </h4>
-                <div className="flex space-x-4 text-sm">
-                  <span className="text-cyber-green">Power: {player.power}</span>
-                  <span className="text-cyber-purple">Wins: {player.wins || 0}</span>
-                  <span className="text-cyber-red">Losses: {player.losses || 0}</span>
+    <div className="bg-white/10 backdrop-blur-lg rounded-lg p-6 shadow-lg">
+      <h2 className="text-2xl font-bold mb-4 text-white">Leaderboard</h2>
+      {loading ? (
+        <div className="text-white">Loading...</div>
+      ) : (
+        <div className="space-y-4">
+          {players.map((player, index) => (
+            <div
+              key={player.id}
+              className="flex items-center justify-between p-3 bg-white/5 rounded-lg"
+            >
+              <div className="flex items-center space-x-3">
+                <span className="text-lg font-bold text-white">
+                  #{index + 1}
+                </span>
+                <div className="flex items-center space-x-2">
+                  <span className={`font-bold ${player.winStreak >= 2 ? 'text-red-500' : 'text-white'}`}>
+                    {player.username || player.email?.split('@')[0] || 'Anonymous'}
+                  </span>
+                  {player.winStreak >= 2 && (
+                    <span className="text-yellow-400">👑</span>
+                  )}
+                  {player.inQueue && (
+                    <span className="text-green-400 text-sm">(In Queue)</span>
+                  )}
                 </div>
               </div>
+              <div className="text-white">
+                Power: {player.power}
+              </div>
             </div>
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 } 

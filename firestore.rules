@@ -4,32 +4,18 @@ service cloud.firestore {
     // Players collection rules
     match /players/{playerId} {
       allow read: if true;  // Anyone can read player data
-      allow create: if request.auth != null && 
-        request.auth.uid == playerId &&
-        request.resource.data.uid == request.auth.uid &&
-        request.resource.data.keys().hasAll(['uid', 'email', 'power', 'wins', 'losses']) &&
-        request.resource.data.power is number &&
-        request.resource.data.wins is number &&
-        request.resource.data.losses is number;
-      
-      allow update: if request.auth != null && (
-        request.auth.uid == playerId ||  // Player can update their own data
-        request.auth.uid == resource.data.uid  // Or if they're the owner
-      ) && request.resource.data.diff(resource.data).affectedKeys()
-          .hasAny(['power', 'wins', 'losses', 'lastMatch', 'username']);
-      
-      allow delete: if false;  // No one can delete player data
+      allow create: if request.auth != null;  // Only authenticated users can create
+      allow update: if request.auth != null && request.auth.uid == playerId;  // Players can only update their own data
+      allow delete: if false;  // No deletions allowed
     }
     
     // Matches collection rules
     match /matches/{matchId} {
-      allow read: if true;
-      allow create: if request.auth != null;
-      allow update: if request.auth != null && (
-        request.auth.uid == resource.data.player1Id ||
-        request.auth.uid == resource.data.player2Id
-      );
-      allow delete: if false;
+      allow read: if true;  // Anyone can read match data
+      allow create: if request.auth != null;  // Authenticated users can create matches
+      allow update: if request.auth != null && 
+        (request.auth.uid == resource.data.player1Id || request.auth.uid == resource.data.player2Id);  // Only match participants can update
+      allow delete: if false;  // No deletions allowed
     }
 
     // Allow querying players collection

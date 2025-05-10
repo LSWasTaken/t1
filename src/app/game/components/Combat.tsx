@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react';
 import { useAuth } from '@/lib/auth';
 import { db } from '@/lib/firebase';
-import { doc, getDoc, updateDoc, increment, collection, addDoc, serverTimestamp, FieldValue, query, where, getDocs } from 'firebase/firestore';
+import { doc, getDoc, updateDoc, increment, collection, addDoc, serverTimestamp, FieldValue, query, where, getDocs, orderBy, onSnapshot, setDoc, deleteDoc } from 'firebase/firestore';
 
 interface Player {
   id: string;
@@ -16,6 +16,11 @@ interface Player {
   winStreak: number;
   highestWinStreak: number;
   inQueue?: boolean;
+  role?: 'attacker' | 'defender' | 'balanced';
+  lastMatch?: FieldValue;
+  currentHealth?: number;
+  opponentHealth?: number;
+  isAttacking?: boolean;
 }
 
 interface MatchData {
@@ -26,6 +31,22 @@ interface MatchData {
   winner: string;
   powerGained: number;
   timestamp: FieldValue;
+}
+
+interface BattleData {
+  player1Id: string;
+  player2Id: string;
+  player1Health: number;
+  player2Health: number;
+  lastUpdate: FieldValue;
+}
+
+interface DamageNumber {
+  id: number;
+  value: number;
+  x: number;
+  y: number;
+  isPlayer: boolean;
 }
 
 const MAX_HEALTH = 100;
@@ -44,6 +65,15 @@ export default function Combat() {
   const [queueTimer, setQueueTimer] = useState(50);
   const [canLeaveQueue, setCanLeaveQueue] = useState(true);
   const [queueCooldown, setQueueCooldown] = useState(0);
+  const [selectedRole, setSelectedRole] = useState<'attacker' | 'defender' | 'balanced'>('balanced');
+  const [queuePosition, setQueuePosition] = useState<number>(0);
+  const [estimatedTime, setEstimatedTime] = useState<number>(0);
+  const [matchFound, setMatchFound] = useState(false);
+  const [damageNumbers, setDamageNumbers] = useState<DamageNumber[]>([]);
+  const [battleTimer, setBattleTimer] = useState(0);
+  const [isAttacking, setIsAttacking] = useState(false);
+  const [isDefending, setIsDefending] = useState(false);
+  const [lastDamage, setLastDamage] = useState<{ player: number; opponent: number }>({ player: 0, opponent: 0 });
 
   // Load state from localStorage
   useEffect(() => {
@@ -107,49 +137,36 @@ export default function Combat() {
     fetchPlayerData();
   }, [user]);
 
-  // Add polling for opponents
+  // Add role selection effect
   useEffect(() => {
-    let pollInterval: NodeJS.Timeout;
-
-    const findOpponent = async () => {
-      if (!user || !inQueue || opponent) return;
-
-      try {
-        const q = query(
-          collection(db, 'players'),
-          where('uid', '!=', user.uid),
-          where('inQueue', '==', true)
-        );
-
-        const querySnapshot = await getDocs(q);
-        const potentialOpponents = querySnapshot.docs.map(doc => ({
-          id: doc.id,
-          ...doc.data()
-        } as Player));
-
-        if (potentialOpponents.length > 0) {
-          // Randomly select an opponent
-          const randomIndex = Math.floor(Math.random() * potentialOpponents.length);
-          const selectedOpponent = potentialOpponents[randomIndex];
-          setOpponent(selectedOpponent);
-          setBattleLog([`Found opponent: ${selectedOpponent.username || selectedOpponent.email?.split('@')[0] || 'Anonymous'}`]);
-        }
-      } catch (error) {
-        console.error('Error finding opponent:', error);
-      }
-    };
-
     if (inQueue && !opponent) {
-      // Poll every 2 seconds for opponents
-      pollInterval = setInterval(findOpponent, 2000);
-      // Also try immediately
-      findOpponent();
-    }
+      const updateQueuePosition = async () => {
+        try {
+          const q = query(
+            collection(db, 'players'),
+            where('inQueue', '==', true),
+            where('role', '==', selectedRole),
+            orderBy('power', 'asc')
+          );
+          const snapshot = await getDocs(q);
+          const position = snapshot.docs.findIndex(doc => doc.id === user?.uid) + 1;
+          setQueuePosition(position);
+          
+          // Estimate time based on queue position and role
+          const baseTime = 30; // Base time in seconds
+          const roleMultiplier = selectedRole === 'balanced' ? 1 : 1.5;
+          const positionMultiplier = Math.max(1, position / 2);
+          setEstimatedTime(Math.ceil(baseTime * roleMultiplier * positionMultiplier));
+        } catch (error) {
+          console.error('Error updating queue position:', error);
+        }
+      };
 
-    return () => {
-      if (pollInterval) clearInterval(pollInterval);
-    };
-  }, [user, inQueue, opponent]);
+      const interval = setInterval(updateQueuePosition, 2000);
+      updateQueuePosition();
+      return () => clearInterval(interval);
+    }
+  }, [inQueue, opponent, selectedRole, user]);
 
   // Add copy-paste prevention
   useEffect(() => {
@@ -158,15 +175,113 @@ export default function Combat() {
       return false;
     };
 
+    const preventContextMenu = (e: MouseEvent) => {
+      e.preventDefault();
+      return false;
+    };
+
+    const preventSelect = (e: Event) => {
+      e.preventDefault();
+      return false;
+    };
+
+    const preventDrag = (e: DragEvent) => {
+      e.preventDefault();
+      return false;
+    };
+
+    const preventKeyDown = (e: KeyboardEvent) => {
+      // Prevent common copy shortcuts
+      if ((e.ctrlKey || e.metaKey) && (
+        e.key === 'c' || // Copy
+        e.key === 'v' || // Paste
+        e.key === 'x' || // Cut
+        e.key === 'a'    // Select all
+      )) {
+        e.preventDefault();
+        return false;
+      }
+    };
+
+    // Add event listeners
     document.addEventListener('copy', preventCopyPaste);
     document.addEventListener('paste', preventCopyPaste);
     document.addEventListener('cut', preventCopyPaste);
+    document.addEventListener('contextmenu', preventContextMenu);
+    document.addEventListener('selectstart', preventSelect);
+    document.addEventListener('dragstart', preventDrag);
+    document.addEventListener('keydown', preventKeyDown);
+
+    // Add CSS to prevent text selection
+    const style = document.createElement('style');
+    style.textContent = `
+      * {
+        -webkit-user-select: none !important;
+        -moz-user-select: none !important;
+        -ms-user-select: none !important;
+        user-select: none !important;
+      }
+    `;
+    document.head.appendChild(style);
 
     return () => {
+      // Remove event listeners
       document.removeEventListener('copy', preventCopyPaste);
       document.removeEventListener('paste', preventCopyPaste);
       document.removeEventListener('cut', preventCopyPaste);
+      document.removeEventListener('contextmenu', preventContextMenu);
+      document.removeEventListener('selectstart', preventSelect);
+      document.removeEventListener('dragstart', preventDrag);
+      document.removeEventListener('keydown', preventKeyDown);
+      // Remove style
+      document.head.removeChild(style);
     };
+  }, []);
+
+  // Add real-time health sync
+  useEffect(() => {
+    if (!user || !opponent) return;
+
+    const battleRef = doc(db, 'battles', `${user.uid}_${opponent.id}`);
+    
+    // Set up real-time listener for battle updates
+    const unsubscribe = onSnapshot(battleRef, (doc) => {
+      const battleData = doc.data() as BattleData | undefined;
+      if (battleData) {
+        if (battleData.player1Id === user.uid) {
+          setPlayerHealth(battleData.player1Health);
+          setOpponentHealth(battleData.player2Health);
+        } else {
+          setPlayerHealth(battleData.player2Health);
+          setOpponentHealth(battleData.player1Health);
+        }
+      }
+    });
+
+    return () => unsubscribe();
+  }, [user, opponent]);
+
+  // Add battle timer effect
+  useEffect(() => {
+    let timer: NodeJS.Timeout;
+    if (opponent) {
+      timer = setInterval(() => {
+        setBattleTimer(prev => prev + 1);
+      }, 1000);
+    } else {
+      setBattleTimer(0);
+    }
+    return () => {
+      if (timer) clearInterval(timer);
+    };
+  }, [opponent]);
+
+  // Add damage number cleanup effect
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setDamageNumbers(prev => prev.filter(num => Date.now() - num.id < 1000));
+    }, 100);
+    return () => clearInterval(timer);
   }, []);
 
   const resetHealth = () => {
@@ -206,21 +321,24 @@ export default function Combat() {
     setQueueTimer(50);
     setCanLeaveQueue(false);
     setQueueCooldown(5);
+    setMatchFound(false);
 
     try {
       const playerRef = doc(db, 'players', user.uid);
       await updateDoc(playerRef, {
         inQueue: true,
+        role: selectedRole,
         lastMatch: serverTimestamp()
       });
       setInQueue(true);
-      setBattleLog(['Waiting for opponent...']);
+      setBattleLog(['Entering matchmaking queue...']);
 
       // Initial opponent search
       const q = query(
         collection(db, 'players'),
-        where('uid', '!=', user.uid),
-        where('inQueue', '==', true)
+        where('inQueue', '==', true),
+        where('role', '==', selectedRole),
+        where('uid', '!=', user.uid)
       );
 
       const querySnapshot = await getDocs(q);
@@ -230,12 +348,35 @@ export default function Combat() {
       } as Player));
 
       if (potentialOpponents.length > 0) {
-        const randomIndex = Math.floor(Math.random() * potentialOpponents.length);
-        const selectedOpponent = potentialOpponents[randomIndex];
-        setOpponent(selectedOpponent);
-        setBattleLog([`Found opponent: ${selectedOpponent.username || selectedOpponent.email?.split('@')[0] || 'Anonymous'}`]);
+        // Find closest power level opponent
+        const playerPower = (await getDoc(playerRef)).data()?.power || 0;
+        const closestOpponent = potentialOpponents.reduce((closest, current) => {
+          const currentDiff = Math.abs(current.power - playerPower);
+          const closestDiff = Math.abs(closest.power - playerPower);
+          return currentDiff < closestDiff ? current : closest;
+        });
+
+        // Update both players' queue status
+        const opponentRef = doc(db, 'players', closestOpponent.id);
+        await updateDoc(opponentRef, {
+          inQueue: false,
+          lastMatch: serverTimestamp()
+        });
+        await updateDoc(playerRef, {
+          inQueue: false,
+          lastMatch: serverTimestamp()
+        });
+
+        setMatchFound(true);
+        setOpponent(closestOpponent);
+        setBattleLog([
+          'Match Found!',
+          `Opponent: ${closestOpponent.username || closestOpponent.email?.split('@')[0] || 'Anonymous'}`,
+          `Power Level: ${closestOpponent.power}`,
+          `Role: ${selectedRole}`
+        ]);
       } else {
-        setBattleLog(['No players found in queue. Waiting for opponents...']);
+        setBattleLog(['Searching for opponent...']);
       }
     } catch (error) {
       console.error('Error joining queue:', error);
@@ -296,12 +437,30 @@ export default function Combat() {
     }
   };
 
+  const addDamageNumber = (value: number, isPlayer: boolean) => {
+    const id = Date.now();
+    const x = Math.random() * 100 - 50; // Random x offset
+    const y = isPlayer ? -50 : 50; // Different y positions for player and opponent
+    setDamageNumbers(prev => [...prev, { id, value, x, y, isPlayer }]);
+  };
+
+  const formatTime = (seconds: number) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
+
   const attack = async () => {
     if (!user || !opponent) return;
     setIsInCombat(true);
-    setBattleLog([]); // Reset battle log for new move
+    setIsAttacking(true);
+    setBattleLog([]);
 
     try {
+      const battleRef = doc(db, 'battles', `${user.uid}_${opponent.id}`);
+      const battleDoc = await getDoc(battleRef);
+      const battleData = battleDoc.data() as BattleData | undefined;
+      
       // Calculate attack and defense with more randomness
       const attackRoll = Math.random() * 2;
       const defenseRoll = Math.random() * 2;
@@ -322,6 +481,27 @@ export default function Combat() {
         `Opponent defended with ${Math.floor(defensePower)} power!`,
         `Dealt ${damage} damage!`
       ];
+
+      // Update battle document with new health values
+      if (!battleDoc.exists()) {
+        await setDoc(battleRef, {
+          player1Id: user.uid,
+          player2Id: opponent.id,
+          player1Health: playerHealth,
+          player2Health: newOpponentHealth,
+          lastUpdate: serverTimestamp()
+        } as BattleData);
+      } else if (battleData) {
+        await updateDoc(battleRef, {
+          player1Health: user.uid === battleData.player1Id ? playerHealth : newOpponentHealth,
+          player2Health: user.uid === battleData.player1Id ? newOpponentHealth : playerHealth,
+          lastUpdate: serverTimestamp()
+        });
+      }
+
+      // Add damage number for opponent
+      addDamageNumber(damage, false);
+      setLastDamage(prev => ({ ...prev, opponent: damage }));
 
       // Check if opponent is defeated
       if (newOpponentHealth <= 0) {
@@ -363,6 +543,9 @@ export default function Combat() {
           timestamp: serverTimestamp()
         } as MatchData);
 
+        // Delete battle document
+        await deleteDoc(battleRef);
+
         newBattleLog.push(
           `Victory! Gained ${powerGain} power!`,
           currentWinStreak >= 2 ? `Win Streak: ${currentWinStreak}!` : ''
@@ -382,6 +565,18 @@ export default function Combat() {
           const counterDamage = Math.floor(counterAttackPower * (0.2 + Math.random() * 0.2));
           const newPlayerHealth = Math.max(0, playerHealth - counterDamage);
           setPlayerHealth(newPlayerHealth);
+          setIsDefending(true);
+
+          // Add damage number for player
+          addDamageNumber(counterDamage, true);
+          setLastDamage(prev => ({ ...prev, player: counterDamage }));
+
+          // Update battle document with counter-attack damage
+          await updateDoc(battleRef, {
+            player1Health: user.uid === battleData?.player1Id ? newPlayerHealth : newOpponentHealth,
+            player2Health: user.uid === battleData?.player1Id ? newOpponentHealth : newPlayerHealth,
+            lastUpdate: serverTimestamp()
+          });
 
           newBattleLog.push(
             `Opponent counter-attacked with ${Math.floor(counterAttackPower)} power!`,
@@ -415,6 +610,9 @@ export default function Combat() {
               timestamp: serverTimestamp()
             } as MatchData);
 
+            // Delete battle document
+            await deleteDoc(battleRef);
+
             newBattleLog.push('You were defeated! Better luck next time!');
             setOpponent(null);
             setInQueue(false);
@@ -434,6 +632,8 @@ export default function Combat() {
       setBattleLog(['Error in combat. Try again!']);
     } finally {
       setIsInCombat(false);
+      setIsAttacking(false);
+      setIsDefending(false);
     }
   };
 
@@ -444,7 +644,24 @@ export default function Combat() {
   }
 
   return (
-    <div className="space-y-4 max-w-2xl mx-auto px-4 py-4" onCopy={(e) => e.preventDefault()} onPaste={(e) => e.preventDefault()} onCut={(e) => e.preventDefault()}>
+    <div 
+      className="space-y-4 max-w-2xl mx-auto px-4 py-4" 
+      onCopy={(e) => e.preventDefault()} 
+      onPaste={(e) => e.preventDefault()} 
+      onCut={(e) => e.preventDefault()}
+      onContextMenu={(e) => e.preventDefault()}
+      onDragStart={(e) => e.preventDefault()}
+      onKeyDown={(e) => {
+        if ((e.ctrlKey || e.metaKey) && (
+          e.key === 'c' || 
+          e.key === 'v' || 
+          e.key === 'x' || 
+          e.key === 'a'
+        )) {
+          e.preventDefault();
+        }
+      }}
+    >
       {/* Power Display */}
       <div className="flex flex-col sm:flex-row justify-between items-center gap-2 bg-cyber-black rounded-lg p-3">
         <div className="text-cyber-blue text-center sm:text-left w-full sm:w-auto text-lg">
@@ -462,17 +679,76 @@ export default function Combat() {
         <div className="space-y-4">
           {!opponent ? (
             <div className="space-y-4">
-              <button
-                onClick={inQueue ? leaveQueue : joinQueue}
-                disabled={isSearching || (inQueue && !canLeaveQueue)}
-                className="w-full px-6 py-4 bg-cyber-pink text-white rounded-lg font-press-start hover:bg-cyber-purple transition-colors disabled:opacity-50 text-lg"
-              >
-                {isSearching ? 'Searching...' : inQueue ? 'Leave Queue' : 'Join Queue'}
-              </button>
-              {inQueue && (
-                <div className="text-cyber-yellow text-center animate-pulse text-lg">
-                  Waiting for opponent... ({queueTimer}s)
-                  {!canLeaveQueue && ` (Can leave in ${queueCooldown}s)`}
+              {!inQueue ? (
+                <div className="space-y-4">
+                  <div className="text-cyber-yellow text-center text-lg mb-4">
+                    Select Your Role
+                  </div>
+                  <div className="grid grid-cols-3 gap-4">
+                    <button
+                      onClick={() => setSelectedRole('attacker')}
+                      className={`p-4 rounded-lg font-press-start transition-colors ${
+                        selectedRole === 'attacker'
+                          ? 'bg-cyber-pink text-white'
+                          : 'bg-cyber-black border-2 border-cyber-pink text-cyber-pink'
+                      }`}
+                    >
+                      Attacker
+                    </button>
+                    <button
+                      onClick={() => setSelectedRole('defender')}
+                      className={`p-4 rounded-lg font-press-start transition-colors ${
+                        selectedRole === 'defender'
+                          ? 'bg-cyber-pink text-white'
+                          : 'bg-cyber-black border-2 border-cyber-pink text-cyber-pink'
+                      }`}
+                    >
+                      Defender
+                    </button>
+                    <button
+                      onClick={() => setSelectedRole('balanced')}
+                      className={`p-4 rounded-lg font-press-start transition-colors ${
+                        selectedRole === 'balanced'
+                          ? 'bg-cyber-pink text-white'
+                          : 'bg-cyber-black border-2 border-cyber-pink text-cyber-pink'
+                      }`}
+                    >
+                      Balanced
+                    </button>
+                  </div>
+                  <button
+                    onClick={joinQueue}
+                    disabled={isSearching}
+                    className="w-full px-6 py-4 bg-cyber-pink text-white rounded-lg font-press-start hover:bg-cyber-purple transition-colors disabled:opacity-50 text-lg"
+                  >
+                    {isSearching ? 'Searching...' : 'Enter Queue'}
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <div className="text-cyber-yellow text-center text-lg">
+                    Match Found!
+                  </div>
+                  {!matchFound && (
+                    <div className="space-y-2">
+                      <div className="text-cyber-blue text-center">
+                        Queue Position: {queuePosition}
+                      </div>
+                      <div className="text-cyber-blue text-center">
+                        Estimated Time: {estimatedTime}s
+                      </div>
+                      <div className="text-cyber-blue text-center">
+                        Selected Role: {selectedRole}
+                      </div>
+                    </div>
+                  )}
+                  <button
+                    onClick={leaveQueue}
+                    disabled={!canLeaveQueue}
+                    className="w-full px-6 py-4 bg-cyber-black border-2 border-cyber-pink text-cyber-pink rounded-lg font-press-start hover:bg-cyber-purple transition-colors disabled:opacity-50 text-lg"
+                  >
+                    {!canLeaveQueue ? `Leave Queue (${queueCooldown}s)` : 'Leave Queue'}
+                  </button>
                 </div>
               )}
             </div>
@@ -482,18 +758,28 @@ export default function Combat() {
                 Fighting against: {opponent.username || opponent.email?.split('@')[0] || 'Anonymous'}
               </div>
               
+              {/* Battle Timer */}
+              <div className="text-cyber-blue text-center text-lg font-press-start">
+                Battle Time: {formatTime(battleTimer)}
+              </div>
+              
               {/* Health Bars */}
-              <div className="space-y-3">
+              <div className="space-y-3 relative">
                 <div>
                   <div className="flex justify-between text-sm mb-1">
                     <span className="text-cyber-blue font-bold">Your Health</span>
                     <span className="text-cyber-blue font-bold">{playerHealth}/{MAX_HEALTH}</span>
                   </div>
-                  <div className="h-5 bg-cyber-black border-2 border-cyber-blue rounded-full overflow-hidden">
+                  <div className="h-5 bg-cyber-black border-2 border-cyber-blue rounded-full overflow-hidden relative">
                     <div 
-                      className="h-full bg-cyber-blue transition-all duration-300"
+                      className={`h-full bg-cyber-blue transition-all duration-300 ${isDefending ? 'animate-pulse' : ''}`}
                       style={{ width: `${(playerHealth / MAX_HEALTH) * 100}%` }}
                     />
+                    {lastDamage.player > 0 && (
+                      <div className="absolute right-0 top-0 text-cyber-red text-sm animate-fade-out">
+                        -{lastDamage.player}
+                      </div>
+                    )}
                   </div>
                 </div>
                 <div>
@@ -501,13 +787,34 @@ export default function Combat() {
                     <span className="text-cyber-pink font-bold">Opponent Health</span>
                     <span className="text-cyber-pink font-bold">{opponentHealth}/{MAX_HEALTH}</span>
                   </div>
-                  <div className="h-5 bg-cyber-black border-2 border-cyber-pink rounded-full overflow-hidden">
+                  <div className="h-5 bg-cyber-black border-2 border-cyber-pink rounded-full overflow-hidden relative">
                     <div 
-                      className="h-full bg-cyber-pink transition-all duration-300"
+                      className={`h-full bg-cyber-pink transition-all duration-300 ${isAttacking ? 'animate-pulse' : ''}`}
                       style={{ width: `${(opponentHealth / MAX_HEALTH) * 100}%` }}
                     />
+                    {lastDamage.opponent > 0 && (
+                      <div className="absolute right-0 top-0 text-cyber-red text-sm animate-fade-out">
+                        -{lastDamage.opponent}
+                      </div>
+                    )}
                   </div>
                 </div>
+
+                {/* Floating Damage Numbers */}
+                {damageNumbers.map(({ id, value, x, y, isPlayer }) => (
+                  <div
+                    key={id}
+                    className={`absolute text-cyber-red font-bold text-lg pointer-events-none
+                      ${isPlayer ? 'left-1/4' : 'right-1/4'}
+                      animate-damage-number`}
+                    style={{
+                      transform: `translate(${x}px, ${y}px)`,
+                      animation: 'damageNumber 1s ease-out forwards'
+                    }}
+                  >
+                    -{value}
+                  </div>
+                ))}
               </div>
 
               {/* Action Buttons */}
@@ -515,13 +822,17 @@ export default function Combat() {
                 <button
                   onClick={attack}
                   disabled={isInCombat}
-                  className="flex-1 px-6 py-4 bg-cyber-pink text-white rounded-lg font-press-start hover:bg-cyber-purple transition-colors disabled:opacity-50 text-lg"
+                  className={`flex-1 px-6 py-4 bg-cyber-pink text-white rounded-lg font-press-start 
+                    hover:bg-cyber-purple transition-colors disabled:opacity-50 text-lg
+                    ${isAttacking ? 'animate-pulse' : ''}`}
                 >
                   {isInCombat ? 'Fighting...' : 'Attack!'}
                 </button>
                 <button
                   onClick={leaveQueue}
-                  className="w-full sm:w-auto px-6 py-4 bg-cyber-black border-2 border-cyber-pink text-cyber-pink rounded-lg font-press-start hover:bg-cyber-purple transition-colors text-lg"
+                  className="w-full sm:w-auto px-6 py-4 bg-cyber-black border-2 border-cyber-pink 
+                    text-cyber-pink rounded-lg font-press-start hover:bg-cyber-purple 
+                    transition-colors text-lg"
                 >
                   Surrender
                 </button>
@@ -537,7 +848,10 @@ export default function Combat() {
           <h3 className="text-cyber-pink mb-3 text-center sm:text-left text-lg font-bold">Battle Log:</h3>
           <div className="space-y-2 max-h-48 overflow-y-auto px-2">
             {battleLog.map((log, index) => (
-              <div key={index} className="text-cyber-blue text-center sm:text-left text-base">
+              <div 
+                key={index} 
+                className="text-cyber-blue text-center sm:text-left text-base animate-fade-in"
+              >
                 {log}
               </div>
             ))}
