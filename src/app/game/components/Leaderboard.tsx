@@ -3,22 +3,27 @@
 import { useState, useEffect } from 'react';
 import { useAuth } from '@/lib/auth';
 import { db } from '@/lib/firebase';
-import { collection, query, orderBy, limit, getDocs } from 'firebase/firestore';
+import { collection, query, where, orderBy, limit, getDocs } from 'firebase/firestore';
 import Profile from './Profile';
 
 interface LeaderboardEntry {
   uid: string;
   username: string;
+  email: string;
   power: number;
   wins: number;
   losses: number;
   winStreak: number;
   highestWinStreak: number;
+  inQueue: boolean;
+  lastMatch?: any;
 }
+
+type LeaderboardCategory = 'power' | 'wins' | 'streak';
 
 export default function Leaderboard() {
   const { user } = useAuth();
-  const [activeTab, setActiveTab] = useState<'power' | 'wins' | 'streak'>('power');
+  const [activeTab, setActiveTab] = useState<LeaderboardCategory>('power');
   const [leaderboardData, setLeaderboardData] = useState<LeaderboardEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedPlayer, setSelectedPlayer] = useState<LeaderboardEntry | null>(null);
@@ -33,42 +38,69 @@ export default function Leaderboard() {
       let q;
       switch (activeTab) {
         case 'power':
-          q = query(collection(db, 'players'), orderBy('power', 'desc'), limit(10));
+          q = query(
+            collection(db, 'players'),
+            orderBy('power', 'desc'),
+            limit(10)
+          );
           break;
         case 'wins':
-          q = query(collection(db, 'players'), orderBy('wins', 'desc'), limit(10));
+          q = query(
+            collection(db, 'players'),
+            orderBy('wins', 'desc'),
+            limit(10)
+          );
           break;
         case 'streak':
-          q = query(collection(db, 'players'), orderBy('highestWinStreak', 'desc'), limit(10));
+          q = query(
+            collection(db, 'players'),
+            orderBy('winStreak', 'desc'),
+            limit(10)
+          );
           break;
       }
 
       const querySnapshot = await getDocs(q);
       const data = querySnapshot.docs.map(doc => ({
         uid: doc.id,
-        username: doc.data().username || doc.data().email?.split('@')[0] || 'Anonymous',
+        username: doc.data().username || 'Anonymous',
+        email: doc.data().email || '',
         power: doc.data().power || 0,
         wins: doc.data().wins || 0,
         losses: doc.data().losses || 0,
         winStreak: doc.data().winStreak || 0,
-        highestWinStreak: doc.data().highestWinStreak || 0
+        highestWinStreak: doc.data().highestWinStreak || 0,
+        inQueue: doc.data().inQueue || false,
+        lastMatch: doc.data().lastMatch
       }));
+
       setLeaderboardData(data);
     } catch (error) {
-      console.error('Error fetching leaderboard:', error);
+      console.error('Error fetching leaderboard data:', error);
     } finally {
       setLoading(false);
     }
   };
 
-  const getTabTitle = () => {
-    switch (activeTab) {
+  const getCategoryLabel = (category: LeaderboardCategory) => {
+    switch (category) {
       case 'power':
         return 'Power Rankings';
       case 'wins':
         return 'Most Wins';
       case 'streak':
         return 'Best Streaks';
+    }
+  };
+
+  const getCategoryValue = (entry: LeaderboardEntry) => {
+    switch (activeTab) {
+      case 'power':
+        return entry.power;
+      case 'wins':
+        return entry.wins;
+      case 'streak':
+        return entry.winStreak;
     }
   };
 
@@ -116,7 +148,7 @@ export default function Leaderboard() {
 
           {/* Leaderboard Title */}
           <div className="text-cyber-yellow text-center text-xl font-press-start">
-            {getTabTitle()}
+            {getCategoryLabel(activeTab)}
           </div>
 
           {/* Leaderboard Table */}
@@ -145,9 +177,7 @@ export default function Leaderboard() {
                     </span>
                   </div>
                   <div className="text-cyber-pink font-press-start">
-                    {activeTab === 'power' && `${entry.power} Power`}
-                    {activeTab === 'wins' && `${entry.wins} Wins`}
-                    {activeTab === 'streak' && `${entry.highestWinStreak} Streak`}
+                    {getCategoryValue(entry)}
                   </div>
                 </div>
               ))}
