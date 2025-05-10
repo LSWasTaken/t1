@@ -16,7 +16,6 @@ interface Player {
   winStreak: number;
   highestWinStreak: number;
   inQueue?: boolean;
-  role?: 'attacker' | 'defender' | 'balanced';
   lastMatch?: FieldValue;
   currentHealth?: number;
   opponentHealth?: number;
@@ -65,7 +64,6 @@ export default function Combat() {
   const [queueTimer, setQueueTimer] = useState(50);
   const [canLeaveQueue, setCanLeaveQueue] = useState(true);
   const [queueCooldown, setQueueCooldown] = useState(0);
-  const [selectedRole, setSelectedRole] = useState<'attacker' | 'defender' | 'balanced'>('balanced');
   const [queuePosition, setQueuePosition] = useState<number>(0);
   const [estimatedTime, setEstimatedTime] = useState<number>(0);
   const [matchFound, setMatchFound] = useState(false);
@@ -145,18 +143,16 @@ export default function Combat() {
           const q = query(
             collection(db, 'players'),
             where('inQueue', '==', true),
-            where('role', '==', selectedRole),
             orderBy('power', 'asc')
           );
           const snapshot = await getDocs(q);
           const position = snapshot.docs.findIndex(doc => doc.id === user?.uid) + 1;
           setQueuePosition(position);
           
-          // Estimate time based on queue position and role
+          // Estimate time based on queue position
           const baseTime = 30; // Base time in seconds
-          const roleMultiplier = selectedRole === 'balanced' ? 1 : 1.5;
           const positionMultiplier = Math.max(1, position / 2);
-          setEstimatedTime(Math.ceil(baseTime * roleMultiplier * positionMultiplier));
+          setEstimatedTime(Math.ceil(baseTime * positionMultiplier));
         } catch (error) {
           console.error('Error updating queue position:', error);
         }
@@ -166,7 +162,7 @@ export default function Combat() {
       updateQueuePosition();
       return () => clearInterval(interval);
     }
-  }, [inQueue, opponent, selectedRole, user]);
+  }, [inQueue, opponent, user]);
 
   // Add copy-paste prevention
   useEffect(() => {
@@ -327,7 +323,6 @@ export default function Combat() {
       const playerRef = doc(db, 'players', user.uid);
       await updateDoc(playerRef, {
         inQueue: true,
-        role: selectedRole,
         lastMatch: serverTimestamp()
       });
       setInQueue(true);
@@ -337,7 +332,6 @@ export default function Combat() {
       const q = query(
         collection(db, 'players'),
         where('inQueue', '==', true),
-        where('role', '==', selectedRole),
         where('uid', '!=', user.uid)
       );
 
@@ -372,8 +366,7 @@ export default function Combat() {
         setBattleLog([
           'Match Found!',
           `Opponent: ${closestOpponent.username || closestOpponent.email?.split('@')[0] || 'Anonymous'}`,
-          `Power Level: ${closestOpponent.power}`,
-          `Role: ${selectedRole}`
+          `Power Level: ${closestOpponent.power}`
         ]);
       } else {
         setBattleLog(['Searching for opponent...']);
@@ -388,7 +381,7 @@ export default function Combat() {
   };
 
   const leaveQueue = async () => {
-    if (!user || !canLeaveQueue) return;
+    if (!user) return;
     try {
       const playerRef = doc(db, 'players', user.uid);
       
@@ -399,7 +392,7 @@ export default function Combat() {
           losses: increment(1),
           inQueue: false,
           lastMatch: serverTimestamp(),
-          winStreak: 0 // Reset win streak on surrender
+          winStreak: 0
         });
 
         await updateDoc(opponentRef, {
@@ -431,6 +424,9 @@ export default function Combat() {
       setInQueue(false);
       setOpponent(null);
       resetHealth();
+      setQueueTimer(50);
+      setCanLeaveQueue(true);
+      setQueueCooldown(0);
     } catch (error) {
       console.error('Error leaving queue:', error);
       setBattleLog(['Error leaving queue. Try again!']);
@@ -681,41 +677,6 @@ export default function Combat() {
             <div className="space-y-4">
               {!inQueue ? (
                 <div className="space-y-4">
-                  <div className="text-cyber-yellow text-center text-lg mb-4">
-                    Select Your Role
-                  </div>
-                  <div className="grid grid-cols-3 gap-4">
-                    <button
-                      onClick={() => setSelectedRole('attacker')}
-                      className={`p-4 rounded-lg font-press-start transition-colors ${
-                        selectedRole === 'attacker'
-                          ? 'bg-cyber-pink text-white'
-                          : 'bg-cyber-black border-2 border-cyber-pink text-cyber-pink'
-                      }`}
-                    >
-                      Attacker
-                    </button>
-                    <button
-                      onClick={() => setSelectedRole('defender')}
-                      className={`p-4 rounded-lg font-press-start transition-colors ${
-                        selectedRole === 'defender'
-                          ? 'bg-cyber-pink text-white'
-                          : 'bg-cyber-black border-2 border-cyber-pink text-cyber-pink'
-                      }`}
-                    >
-                      Defender
-                    </button>
-                    <button
-                      onClick={() => setSelectedRole('balanced')}
-                      className={`p-4 rounded-lg font-press-start transition-colors ${
-                        selectedRole === 'balanced'
-                          ? 'bg-cyber-pink text-white'
-                          : 'bg-cyber-black border-2 border-cyber-pink text-cyber-pink'
-                      }`}
-                    >
-                      Balanced
-                    </button>
-                  </div>
                   <button
                     onClick={joinQueue}
                     disabled={isSearching}
@@ -727,7 +688,7 @@ export default function Combat() {
               ) : (
                 <div className="space-y-4">
                   <div className="text-cyber-yellow text-center text-lg">
-                    Match Found!
+                    Searching for Opponent...
                   </div>
                   {!matchFound && (
                     <div className="space-y-2">
@@ -736,9 +697,6 @@ export default function Combat() {
                       </div>
                       <div className="text-cyber-blue text-center">
                         Estimated Time: {estimatedTime}s
-                      </div>
-                      <div className="text-cyber-blue text-center">
-                        Selected Role: {selectedRole}
                       </div>
                     </div>
                   )}

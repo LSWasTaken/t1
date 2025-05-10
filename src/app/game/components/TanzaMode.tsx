@@ -212,6 +212,75 @@ export default function TanzaMode() {
     }
   };
 
+  // Add copy-paste prevention
+  useEffect(() => {
+    const preventCopyPaste = (e: ClipboardEvent) => {
+      e.preventDefault();
+      return false;
+    };
+
+    const preventContextMenu = (e: MouseEvent) => {
+      e.preventDefault();
+      return false;
+    };
+
+    const preventSelect = (e: Event) => {
+      e.preventDefault();
+      return false;
+    };
+
+    const preventDrag = (e: DragEvent) => {
+      e.preventDefault();
+      return false;
+    };
+
+    const preventKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && (
+        e.key === 'c' || // Copy
+        e.key === 'v' || // Paste
+        e.key === 'x' || // Cut
+        e.key === 'a'    // Select all
+      )) {
+        e.preventDefault();
+        return false;
+      }
+    };
+
+    // Add event listeners
+    document.addEventListener('copy', preventCopyPaste);
+    document.addEventListener('paste', preventCopyPaste);
+    document.addEventListener('cut', preventCopyPaste);
+    document.addEventListener('contextmenu', preventContextMenu);
+    document.addEventListener('selectstart', preventSelect);
+    document.addEventListener('dragstart', preventDrag);
+    document.addEventListener('keydown', preventKeyDown);
+
+    // Add CSS to prevent text selection
+    const style = document.createElement('style');
+    style.textContent = `
+      * {
+        -webkit-user-select: none !important;
+        -moz-user-select: none !important;
+        -ms-user-select: none !important;
+        user-select: none !important;
+      }
+    `;
+    document.head.appendChild(style);
+
+    return () => {
+      // Remove event listeners
+      document.removeEventListener('copy', preventCopyPaste);
+      document.removeEventListener('paste', preventCopyPaste);
+      document.removeEventListener('cut', preventCopyPaste);
+      document.removeEventListener('contextmenu', preventContextMenu);
+      document.removeEventListener('selectstart', preventSelect);
+      document.removeEventListener('dragstart', preventDrag);
+      document.removeEventListener('keydown', preventKeyDown);
+      // Remove style
+      document.head.removeChild(style);
+    };
+  }, []);
+
   if (loading) {
     return (
       <div className="text-cyber-blue text-center">Loading Tanza Mode...</div>
@@ -219,7 +288,24 @@ export default function TanzaMode() {
   }
 
   return (
-    <div className="space-y-6">
+    <div 
+      className="space-y-4 max-w-2xl mx-auto px-4 py-4"
+      onCopy={(e) => e.preventDefault()} 
+      onPaste={(e) => e.preventDefault()} 
+      onCut={(e) => e.preventDefault()}
+      onContextMenu={(e) => e.preventDefault()}
+      onDragStart={(e) => e.preventDefault()}
+      onKeyDown={(e) => {
+        if ((e.ctrlKey || e.metaKey) && (
+          e.key === 'c' || 
+          e.key === 'v' || 
+          e.key === 'x' || 
+          e.key === 'a'
+        )) {
+          e.preventDefault();
+        }
+      }}
+    >
       <div className="bg-cyber-black rounded-lg p-6">
         <div className="space-y-4">
           <div className="text-cyber-yellow text-center">
