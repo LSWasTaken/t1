@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react';
 import { useAuth } from '@/lib/auth';
 import { db } from '@/lib/firebase';
-import { collection, query, where, getDocs, doc, updateDoc, increment } from 'firebase/firestore';
+import { collection, query, where, getDocs, doc, updateDoc, increment, addDoc, serverTimestamp, FieldValue } from 'firebase/firestore';
 
 interface Player {
   id: string;
@@ -13,6 +13,17 @@ interface Player {
   power: number;
   wins?: number;
   losses?: number;
+  lastMatch?: FieldValue;
+}
+
+interface MatchData {
+  player1Id: string;
+  player2Id: string;
+  player1Power: number;
+  player2Power: number;
+  winner: string;
+  powerGained: number;
+  timestamp: FieldValue;
 }
 
 export default function Combat({ playerPower }: { playerPower: number }) {
@@ -49,8 +60,9 @@ export default function Combat({ playerPower }: { playerPower: number }) {
       if (potentialOpponents.length > 0) {
         // Randomly select an opponent
         const randomIndex = Math.floor(Math.random() * potentialOpponents.length);
-        setOpponent(potentialOpponents[randomIndex]);
-        setBattleLog(prev => [...prev, `Found opponent: ${potentialOpponents[randomIndex].username || potentialOpponents[randomIndex].email?.split('@')[0] || 'Anonymous'}`]);
+        const selectedOpponent = potentialOpponents[randomIndex];
+        setOpponent(selectedOpponent);
+        setBattleLog(prev => [...prev, `Found opponent: ${selectedOpponent.username || selectedOpponent.email?.split('@')[0] || 'Anonymous'}`]);
       } else {
         // If no opponents in range, find any opponent
         const allPlayersQuery = query(
@@ -65,8 +77,9 @@ export default function Combat({ playerPower }: { playerPower: number }) {
 
         if (allPlayers.length > 0) {
           const randomIndex = Math.floor(Math.random() * allPlayers.length);
-          setOpponent(allPlayers[randomIndex]);
-          setBattleLog(prev => [...prev, `Found opponent: ${allPlayers[randomIndex].username || allPlayers[randomIndex].email?.split('@')[0] || 'Anonymous'}`]);
+          const selectedOpponent = allPlayers[randomIndex];
+          setOpponent(selectedOpponent);
+          setBattleLog(prev => [...prev, `Found opponent: ${selectedOpponent.username || selectedOpponent.email?.split('@')[0] || 'Anonymous'}`]);
         } else {
           setBattleLog(prev => [...prev, 'No opponents found. Try again later!']);
         }
@@ -84,9 +97,9 @@ export default function Combat({ playerPower }: { playerPower: number }) {
     setIsInCombat(true);
 
     try {
-      // Calculate attack and defense rolls
-      const attackRoll = Math.floor(Math.random() * playerPower) + 1;
-      const defenseRoll = Math.floor(Math.random() * opponent.power) + 1;
+      // Calculate attack and defense rolls with some randomness
+      const attackRoll = Math.floor(Math.random() * playerPower * 1.2); // Up to 20% bonus
+      const defenseRoll = Math.floor(Math.random() * opponent.power * 1.2);
 
       setBattleLog(prev => [
         ...prev,
@@ -102,14 +115,27 @@ export default function Combat({ playerPower }: { playerPower: number }) {
         const playerRef = doc(db, 'players', user.uid);
         await updateDoc(playerRef, {
           power: increment(powerGain),
-          wins: increment(1)
+          wins: increment(1),
+          lastMatch: serverTimestamp()
         });
 
         // Update opponent's losses
         const opponentRef = doc(db, 'players', opponent.id);
         await updateDoc(opponentRef, {
-          losses: increment(1)
+          losses: increment(1),
+          lastMatch: serverTimestamp()
         });
+
+        // Record the match
+        await addDoc(collection(db, 'matches'), {
+          player1Id: user.uid,
+          player2Id: opponent.id,
+          player1Power: playerPower,
+          player2Power: opponent.power,
+          winner: user.uid,
+          powerGained: powerGain,
+          timestamp: serverTimestamp()
+        } as MatchData);
 
         setBattleLog(prev => [
           ...prev,
@@ -119,14 +145,27 @@ export default function Combat({ playerPower }: { playerPower: number }) {
         // Update player's losses
         const playerRef = doc(db, 'players', user.uid);
         await updateDoc(playerRef, {
-          losses: increment(1)
+          losses: increment(1),
+          lastMatch: serverTimestamp()
         });
 
         // Update opponent's wins
         const opponentRef = doc(db, 'players', opponent.id);
         await updateDoc(opponentRef, {
-          wins: increment(1)
+          wins: increment(1),
+          lastMatch: serverTimestamp()
         });
+
+        // Record the match
+        await addDoc(collection(db, 'matches'), {
+          player1Id: user.uid,
+          player2Id: opponent.id,
+          player1Power: playerPower,
+          player2Power: opponent.power,
+          winner: opponent.id,
+          powerGained: 0,
+          timestamp: serverTimestamp()
+        } as MatchData);
 
         setBattleLog(prev => [
           ...prev,
@@ -161,8 +200,13 @@ export default function Combat({ playerPower }: { playerPower: number }) {
             <h4 className="text-cyber-blue font-press-start mb-2">
               Opponent: {opponent.username || opponent.email?.split('@')[0] || 'Anonymous'}
             </h4>
-            <p className="text-cyber-green">Power: {opponent.power}</p>
-            <p className="text-cyber-purple">Wins: {opponent.wins || 0}</p>
+            <div className="grid grid-cols-2 gap-2 text-sm">
+              <p className="text-cyber-green">Power: {opponent.power}</p>
+              <p className="text-cyber-purple">Wins: {opponent.wins || 0}</p>
+              <p className="text-cyber-red">Losses: {opponent.losses || 0}</p>
+              <p className="text-cyber-yellow">Win Rate: {opponent.wins && opponent.losses ? 
+                Math.round((opponent.wins / (opponent.wins + opponent.losses)) * 100) : 0}%</p>
+            </div>
           </div>
 
           <div className="flex space-x-4">

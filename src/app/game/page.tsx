@@ -1,48 +1,55 @@
 'use client';
 
+import { useState, useEffect } from 'react';
 import { useAuth } from '@/lib/auth';
-import { useRouter } from 'next/navigation';
-import { useEffect } from 'react';
-import ClickerGame from './components/ClickerGame';
+import { db } from '@/lib/firebase';
+import { doc, getDoc } from 'firebase/firestore';
 import Leaderboard from './components/Leaderboard';
+import Combat from './components/Combat';
+import MatchHistory from './components/MatchHistory';
 
 export default function GamePage() {
-  const { user, loading } = useAuth();
-  const router = useRouter();
+  const { user } = useAuth();
+  const [playerPower, setPlayerPower] = useState(0);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (!loading && !user) {
-      router.push('/login');
-    }
-  }, [user, loading, router]);
+    const fetchPlayerData = async () => {
+      if (!user) return;
+
+      try {
+        const playerDoc = await getDoc(doc(db, 'players', user.uid));
+        const playerData = playerDoc.data();
+        setPlayerPower(playerData?.power || 0);
+      } catch (error) {
+        console.error('Error fetching player data:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchPlayerData();
+  }, [user]);
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-cyber-black text-white">
-        <div className="text-2xl font-press-start text-cyber-pink">Loading...</div>
+      <div className="container mx-auto px-4 py-8">
+        <div className="text-cyber-blue text-center">Loading game data...</div>
       </div>
     );
   }
 
-  if (!user) {
-    return null;
-  }
-
   return (
-    <main className="min-h-screen p-4 bg-cyber-black text-white">
-      <div className="max-w-7xl mx-auto">
-        <h1 className="text-3xl md:text-4xl font-press-start text-cyber-pink mb-8 text-center">
-          Tanza Fighter Arena
-        </h1>
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          <div className="lg:col-span-2">
-            <ClickerGame />
-          </div>
-          <div>
-            <Leaderboard />
-          </div>
+    <div className="container mx-auto px-4 py-8">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+        <div className="space-y-8">
+          <Combat playerPower={playerPower} />
+          <MatchHistory />
+        </div>
+        <div>
+          <Leaderboard />
         </div>
       </div>
-    </main>
+    </div>
   );
 } 
