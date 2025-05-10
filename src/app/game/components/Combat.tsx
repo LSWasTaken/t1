@@ -62,6 +62,24 @@ export default function Combat() {
     fetchPlayerData();
   }, [user]);
 
+  // Add copy-paste prevention
+  useEffect(() => {
+    const preventCopyPaste = (e: ClipboardEvent) => {
+      e.preventDefault();
+      return false;
+    };
+
+    document.addEventListener('copy', preventCopyPaste);
+    document.addEventListener('paste', preventCopyPaste);
+    document.addEventListener('cut', preventCopyPaste);
+
+    return () => {
+      document.removeEventListener('copy', preventCopyPaste);
+      document.removeEventListener('paste', preventCopyPaste);
+      document.removeEventListener('cut', preventCopyPaste);
+    };
+  }, []);
+
   const resetHealth = () => {
     setPlayerHealth(MAX_HEALTH);
     setOpponentHealth(MAX_HEALTH);
@@ -149,6 +167,7 @@ export default function Combat() {
         await updateDoc(playerRef, {
           inQueue: false
         });
+        setBattleLog(['Left the queue']);
       }
 
       setInQueue(false);
@@ -308,7 +327,7 @@ export default function Combat() {
   }
 
   return (
-    <div className="space-y-4 max-w-2xl mx-auto px-4 py-4">
+    <div className="space-y-4 max-w-2xl mx-auto px-4 py-4" onCopy={(e) => e.preventDefault()} onPaste={(e) => e.preventDefault()} onCut={(e) => e.preventDefault()}>
       {/* Power Display */}
       <div className="flex flex-col sm:flex-row justify-between items-center gap-2 bg-cyber-black rounded-lg p-3">
         <div className="text-cyber-blue text-center sm:text-left w-full sm:w-auto text-lg">
