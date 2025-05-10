@@ -98,6 +98,7 @@ export default function Combat() {
         lastMatch: serverTimestamp()
       });
       setInQueue(true);
+      setBattleLog(['Waiting for opponent...']);
 
       // Find opponent in queue
       const q = query(
@@ -118,12 +119,11 @@ export default function Combat() {
         const selectedOpponent = potentialOpponents[randomIndex];
         setOpponent(selectedOpponent);
         setBattleLog([`Found opponent: ${selectedOpponent.username || selectedOpponent.email?.split('@')[0] || 'Anonymous'}`]);
-      } else {
-        setBattleLog(['Waiting for opponent...']);
       }
     } catch (error) {
       console.error('Error joining queue:', error);
       setBattleLog(['Error joining queue. Try again!']);
+      setInQueue(false);
     } finally {
       setIsSearching(false);
     }

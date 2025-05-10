@@ -51,11 +51,6 @@ export default function Leaderboard() {
   const getPlayerStyle = (player: Player, index: number) => {
     let style = '';
     
-    // Top player gets crown
-    if (index === 0) {
-      style += 'font-bold ';
-    }
-    
     // Win streak effects
     if (player.winStreak >= 25) {
       style += 'animate-rainbow ';
