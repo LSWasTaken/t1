@@ -59,9 +59,9 @@ export default function Combat() {
   const [loading, setLoading] = useState(true);
   const [playerHealth, setPlayerHealth] = useState(MAX_HEALTH);
   const [opponentHealth, setOpponentHealth] = useState(MAX_HEALTH);
-  const [isInCombat, setIsInCombat] = useState(false);
-  const [inQueue, setInQueue] = useState(false);
-  const [queueTimer, setQueueTimer] = useState(50);
+  const [isInQueue, setIsInQueue] = useState(false);
+  const [queueTime, setQueueTime] = useState(0);
+  const [queueTimer, setQueueTimer] = useState<NodeJS.Timeout | null>(null);
   const [canLeaveQueue, setCanLeaveQueue] = useState(true);
   const [queueCooldown, setQueueCooldown] = useState(0);
   const [queuePosition, setQueuePosition] = useState<number>(0);
@@ -72,6 +72,14 @@ export default function Combat() {
   const [isAttacking, setIsAttacking] = useState(false);
   const [isDefending, setIsDefending] = useState(false);
   const [lastDamage, setLastDamage] = useState<{ player: number; opponent: number }>({ player: 0, opponent: 0 });
+  const [wins, setWins] = useState(0);
+  const [losses, setLosses] = useState(0);
+  const [winStreak, setWinStreak] = useState(0);
+  const [highestWinStreak, setHighestWinStreak] = useState(0);
+  const [isOnCooldown, setIsOnCooldown] = useState(false);
+  const [cooldownTime, setCooldownTime] = useState(0);
+  const [lastTextTime, setLastTextTime] = useState(0);
+  const MIN_TIME_BETWEEN_TEXTS = 5000; // 5 seconds
 
   // Load state from localStorage
   useEffect(() => {
@@ -124,7 +132,11 @@ export default function Combat() {
         const playerDoc = await getDoc(playerRef);
         const playerData = playerDoc.data();
         setPlayerPower(playerData?.power || 0);
-        setInQueue(playerData?.inQueue || false);
+        setIsInQueue(playerData?.inQueue || false);
+        setWins(playerData?.wins || 0);
+        setLosses(playerData?.losses || 0);
+        setWinStreak(playerData?.winStreak || 0);
+        setHighestWinStreak(playerData?.highestWinStreak || 0);
       } catch (error) {
         console.error('Error fetching player data:', error);
       } finally {
@@ -137,7 +149,7 @@ export default function Combat() {
 
   // Add role selection effect
   useEffect(() => {
-    if (inQueue && !opponent) {
+    if (isInQueue && !opponent) {
       const updateQueuePosition = async () => {
         try {
           const q = query(
@@ -162,7 +174,7 @@ export default function Combat() {
       updateQueuePosition();
       return () => clearInterval(interval);
     }
-  }, [inQueue, opponent, user]);
+  }, [isInQueue, opponent, user]);
 
   // Add copy-paste prevention
   useEffect(() => {
@@ -245,7 +257,11 @@ export default function Combat() {
       const playerData = doc.data();
       if (playerData) {
         setPlayerPower(playerData.power || 0);
-        setInQueue(playerData.inQueue || false);
+        setIsInQueue(playerData.inQueue || false);
+        setWins(playerData.wins || 0);
+        setLosses(playerData.losses || 0);
+        setWinStreak(playerData.winStreak || 0);
+        setHighestWinStreak(playerData.highestWinStreak || 0);
         // Update other player stats as needed
       }
     });
@@ -307,9 +323,9 @@ export default function Combat() {
   // Queue timeout effect
   useEffect(() => {
     let timer: NodeJS.Timeout;
-    if (inQueue && !opponent) {
+    if (isInQueue && !opponent) {
       timer = setInterval(() => {
-        setQueueTimer((prev) => {
+        setQueueTime((prev) => {
           if (prev <= 1) {
             clearInterval(timer);
             leaveQueue();
@@ -320,13 +336,13 @@ export default function Combat() {
         });
       }, 1000);
     } else {
-      setQueueTimer(50);
+      setQueueTime(50);
     }
 
     return () => {
       if (timer) clearInterval(timer);
     };
-  }, [inQueue, opponent]);
+  }, [isInQueue, opponent]);
 
   // Add queue state effect
   useEffect(() => {
@@ -339,9 +355,9 @@ export default function Combat() {
         const playerData = playerDoc.data();
         
         if (playerData?.inQueue) {
-          setInQueue(true);
+          setIsInQueue(true);
           setBattleLog(['You are already in queue!']);
-          setQueueTimer(50);
+          setQueueTime(50);
           setCanLeaveQueue(true);
           setQueueCooldown(0);
         }
@@ -355,20 +371,10 @@ export default function Combat() {
 
   const joinQueue = async () => {
     if (!user) return;
-    
-    // Check if already in queue
-    if (inQueue) {
-      setBattleLog(['You are already in queue!']);
+    if (isInQueue) {
+      setBattleLog(prev => [...prev, 'You are already in queue!']);
       return;
     }
-
-    setIsSearching(true);
-    setBattleLog([]);
-    resetHealth();
-    setQueueTimer(50);
-    setCanLeaveQueue(true);
-    setQueueCooldown(0);
-    setMatchFound(false);
 
     try {
       const playerRef = doc(db, 'players', user.uid);
@@ -376,8 +382,13 @@ export default function Combat() {
         inQueue: true,
         lastMatch: serverTimestamp()
       });
-      setInQueue(true);
-      setBattleLog(['Entering matchmaking queue...']);
+      setIsInQueue(true);
+      setBattleLog(prev => [...prev, 'Joined queue!']);
+      setQueueTime(0);
+      const timer = setInterval(() => {
+        setQueueTime(prev => prev + 1);
+      }, 1000);
+      setQueueTimer(timer);
 
       // Initial opponent search - simplified to find any available player
       const q = query(
@@ -419,8 +430,8 @@ export default function Combat() {
       }
     } catch (error) {
       console.error('Error joining queue:', error);
-      setBattleLog(['Error joining queue. Try again!']);
-      setInQueue(false);
+      setBattleLog(prev => [...prev, 'Failed to join queue. Please try again.']);
+      setIsInQueue(false);
     } finally {
       setIsSearching(false);
     }
@@ -468,16 +479,16 @@ export default function Combat() {
         setBattleLog(['Left the queue']);
       }
 
-      setInQueue(false);
+      setIsInQueue(false);
       setOpponent(null);
       resetHealth();
-      setQueueTimer(50);
+      setQueueTime(50);
       setCanLeaveQueue(true);
       setQueueCooldown(0);
       setMatchFound(false);
     } catch (error) {
       console.error('Error leaving queue:', error);
-      setBattleLog(['Error leaving queue. Try again!']);
+      setBattleLog(prev => [...prev, 'Failed to leave queue. Please try again.']);
     }
   };
 
@@ -496,7 +507,7 @@ export default function Combat() {
 
   const attack = async () => {
     if (!user || !opponent) return;
-    setIsInCombat(true);
+    setIsInQueue(true);
     setIsAttacking(true);
     setBattleLog([]);
 
@@ -596,7 +607,7 @@ export default function Combat() {
         );
         setPlayerPower(prev => prev + powerGain);
         setOpponent(null);
-        setInQueue(false);
+        setIsInQueue(false);
       } else {
         // Opponent counter-attacks
         const counterAttackRoll = Math.random() * 2;
@@ -659,7 +670,7 @@ export default function Combat() {
 
             newBattleLog.push('You were defeated! Better luck next time!');
             setOpponent(null);
-            setInQueue(false);
+            setIsInQueue(false);
           }
         } else {
           newBattleLog.push(
@@ -675,7 +686,7 @@ export default function Combat() {
       console.error('Error in combat:', error);
       setBattleLog(['Error in combat. Try again!']);
     } finally {
-      setIsInCombat(false);
+      setIsInQueue(false);
       setIsAttacking(false);
       setIsDefending(false);
     }
@@ -723,7 +734,7 @@ export default function Combat() {
         <div className="space-y-4">
           {!opponent ? (
             <div className="space-y-4">
-              {!inQueue ? (
+              {!isInQueue ? (
                 <div className="space-y-4">
                   <button
                     onClick={joinQueue}
@@ -826,12 +837,12 @@ export default function Combat() {
               <div className="flex flex-col sm:flex-row gap-3">
                 <button
                   onClick={attack}
-                  disabled={isInCombat}
+                  disabled={isInQueue}
                   className={`flex-1 px-6 py-4 bg-cyber-pink text-white rounded-lg font-press-start 
                     hover:bg-cyber-purple transition-colors disabled:opacity-50 text-lg
                     ${isAttacking ? 'animate-pulse' : ''}`}
                 >
-                  {isInCombat ? 'Fighting...' : 'Attack!'}
+                  {isInQueue ? 'Fighting...' : 'Attack!'}
                 </button>
                 <button
                   onClick={leaveQueue}

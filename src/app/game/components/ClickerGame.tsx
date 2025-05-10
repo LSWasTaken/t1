@@ -12,6 +12,13 @@ interface Obstacle {
   x: number;
   height: number;
   passed: boolean;
+  gap: number;
+}
+
+interface Bird {
+  y: number;
+  velocity: number;
+  rotation: number;
 }
 
 export default function ClickerGame() {
@@ -23,15 +30,18 @@ export default function ClickerGame() {
   const [gameOver, setGameOver] = useState(false);
   const [score, setScore] = useState(0);
   const [highScore, setHighScore] = useState(0);
-  const [birdY, setBirdY] = useState(250);
-  const [birdVelocity, setBirdVelocity] = useState(0);
+  const [bird, setBird] = useState<Bird>({ y: 250, velocity: 0, rotation: 0 });
   const [obstacles, setObstacles] = useState<Obstacle[]>([]);
-  const gameAreaRef = useRef<HTMLDivElement>(null);
+  const [backgroundPosition, setBackgroundPosition] = useState(0);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
   const gameLoopRef = useRef<number>();
   const GRAVITY = 0.5;
   const JUMP_FORCE = -10;
   const OBSTACLE_SPEED = 3;
   const OBSTACLE_SPAWN_INTERVAL = 2000;
+  const GAP_SIZE = 150;
+  const BIRD_SIZE = 30;
+  const OBSTACLE_WIDTH = 60;
 
   useEffect(() => {
     if (user) {
@@ -88,26 +98,64 @@ export default function ClickerGame() {
     setGameStarted(true);
     setGameOver(false);
     setScore(0);
-    setBirdY(250);
-    setBirdVelocity(0);
+    setBird({ y: 250, velocity: 0, rotation: 0 });
     setObstacles([]);
+    setBackgroundPosition(0);
     gameLoopRef.current = requestAnimationFrame(gameLoop);
     spawnObstacle();
   };
 
   const gameLoop = () => {
-    if (!gameStarted || gameOver) return;
+    if (!gameStarted || gameOver || !canvasRef.current) return;
 
-    // Update bird position
-    setBirdY(prev => {
-      const newY = prev + birdVelocity;
-      if (newY < 0 || newY > 500) {
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    // Clear canvas
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // Draw background
+    ctx.fillStyle = '#1a1a1a';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // Draw scrolling background
+    setBackgroundPosition(prev => (prev - 1) % canvas.width);
+    ctx.fillStyle = '#2a2a2a';
+    for (let i = 0; i < canvas.width; i += 50) {
+      ctx.fillRect((i + backgroundPosition) % canvas.width, 0, 2, canvas.height);
+    }
+
+    // Update bird
+    setBird(prev => {
+      const newY = prev.y + prev.velocity;
+      const newRotation = Math.min(Math.max(prev.velocity * 5, -30), 30);
+      
+      if (newY < 0 || newY > canvas.height) {
         endGame();
         return prev;
       }
-      return newY;
+      
+      return {
+        y: newY,
+        velocity: prev.velocity + GRAVITY,
+        rotation: newRotation
+      };
     });
-    setBirdVelocity(prev => prev + GRAVITY);
+
+    // Draw bird
+    ctx.save();
+    ctx.translate(50, bird.y);
+    ctx.rotate((bird.rotation * Math.PI) / 180);
+    ctx.fillStyle = '#ff69b4';
+    ctx.beginPath();
+    ctx.arc(0, 0, BIRD_SIZE / 2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.arc(-5, -5, 3, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
 
     // Update obstacles
     setObstacles(prev => {
@@ -115,12 +163,12 @@ export default function ClickerGame() {
         ...obs,
         x: obs.x - OBSTACLE_SPEED,
         passed: obs.passed || obs.x < 50
-      })).filter(obs => obs.x > -50);
+      })).filter(obs => obs.x > -OBSTACLE_WIDTH);
 
       // Check for collisions
       newObstacles.forEach(obs => {
-        if (obs.x < 100 && obs.x > 0) {
-          if (birdY < obs.height - 100 || birdY > obs.height + 100) {
+        if (obs.x < 50 + BIRD_SIZE && obs.x + OBSTACLE_WIDTH > 50 - BIRD_SIZE) {
+          if (bird.y < obs.height - GAP_SIZE/2 || bird.y > obs.height + GAP_SIZE/2) {
             endGame();
           }
         }
@@ -134,14 +182,35 @@ export default function ClickerGame() {
       return newObstacles;
     });
 
+    // Draw obstacles
+    obstacles.forEach(obs => {
+      // Top pipe
+      ctx.fillStyle = '#4CAF50';
+      ctx.fillRect(obs.x, 0, OBSTACLE_WIDTH, obs.height - GAP_SIZE/2);
+      ctx.fillStyle = '#388E3C';
+      ctx.fillRect(obs.x - 5, obs.height - GAP_SIZE/2 - 20, OBSTACLE_WIDTH + 10, 20);
+
+      // Bottom pipe
+      ctx.fillStyle = '#4CAF50';
+      ctx.fillRect(obs.x, obs.height + GAP_SIZE/2, OBSTACLE_WIDTH, canvas.height);
+      ctx.fillStyle = '#388E3C';
+      ctx.fillRect(obs.x - 5, obs.height + GAP_SIZE/2, OBSTACLE_WIDTH + 10, 20);
+    });
+
+    // Draw score
+    ctx.fillStyle = '#fff';
+    ctx.font = '24px "Press Start 2P"';
+    ctx.textAlign = 'center';
+    ctx.fillText(score.toString(), canvas.width / 2, 50);
+
     gameLoopRef.current = requestAnimationFrame(gameLoop);
   };
 
   const spawnObstacle = () => {
-    if (!gameStarted || gameOver) return;
+    if (!gameStarted || gameOver || !canvasRef.current) return;
 
-    const height = Math.random() * 300 + 100;
-    setObstacles(prev => [...prev, { x: 600, height, passed: false }]);
+    const height = Math.random() * (canvasRef.current.height - GAP_SIZE - 100) + 50;
+    setObstacles(prev => [...prev, { x: canvasRef.current!.width, height, passed: false, gap: GAP_SIZE }]);
     setTimeout(spawnObstacle, OBSTACLE_SPAWN_INTERVAL);
   };
 
@@ -149,18 +218,20 @@ export default function ClickerGame() {
     if (!gameStarted) {
       startGame();
     }
-    setBirdVelocity(JUMP_FORCE);
+    setBird(prev => ({
+      ...prev,
+      velocity: JUMP_FORCE
+    }));
   };
 
   const awardPower = async () => {
     if (!user) return;
-    const powerGain = 1;
     try {
       const playerRef = doc(db, 'players', user.uid);
       await updateDoc(playerRef, {
-        power: increment(powerGain)
+        power: increment(1)
       });
-      setPower(prev => prev + powerGain);
+      setPower(prev => prev + 1);
     } catch (error) {
       console.error('Error updating power:', error);
     }
@@ -219,38 +290,14 @@ export default function ClickerGame() {
               <div className="text-cyber-blue mb-4">
                 Score: {score} | High Score: {highScore}
               </div>
-              <div 
-                ref={gameAreaRef}
-                className="relative w-full h-[500px] bg-cyber-black border-2 border-cyber-pink rounded-lg overflow-hidden"
-                onClick={handleJump}
-              >
-                {/* Bird */}
-                <div 
-                  className="absolute w-8 h-8 bg-cyber-pink rounded-full"
-                  style={{ top: `${birdY}px`, left: '50px' }}
+              <div className="relative">
+                <canvas
+                  ref={canvasRef}
+                  width={800}
+                  height={600}
+                  className="w-full bg-cyber-black border-2 border-cyber-pink rounded-lg"
+                  onClick={handleJump}
                 />
-                
-                {/* Obstacles */}
-                {obstacles.map((obs, index) => (
-                  <div key={index}>
-                    <div 
-                      className="absolute w-10 bg-cyber-blue"
-                      style={{ 
-                        top: 0, 
-                        left: `${obs.x}px`, 
-                        height: `${obs.height - 100}px` 
-                      }}
-                    />
-                    <div 
-                      className="absolute w-10 bg-cyber-blue"
-                      style={{ 
-                        bottom: 0, 
-                        left: `${obs.x}px`, 
-                        height: `${500 - obs.height - 100}px` 
-                      }}
-                    />
-                  </div>
-                ))}
 
                 {/* Game Over Screen */}
                 {gameOver && (
