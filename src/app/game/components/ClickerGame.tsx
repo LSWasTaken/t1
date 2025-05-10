@@ -26,12 +26,14 @@ const GRAVITY = 0.5;
 const JUMP_FORCE = -10;
 const PIPE_SPEED = 2;
 const PIPE_SPAWN_INTERVAL = 1500;
-const GAP_HEIGHT = 150;
-const MIN_GAP_Y = 100;
-const MAX_GAP_Y = 400;
-const BIRD_SIZE = 40;
-const GROUND_HEIGHT = 100;
-const CLOUD_COUNT = 5;
+const GAP_HEIGHT = 100;
+const MIN_GAP_Y = 50;
+const MAX_GAP_Y = 200;
+const BIRD_SIZE = 20;
+const GROUND_HEIGHT = 50;
+const CLOUD_COUNT = 3;
+const GAME_WIDTH = 400;
+const GAME_HEIGHT = 300;
 
 export default function ClickerGame() {
   const { user } = useAuth();
@@ -227,8 +229,8 @@ export default function ClickerGame() {
     if (!ctx) return;
 
     // Set canvas size
-    canvas.width = window.innerWidth;
-    canvas.height = window.innerHeight;
+    canvas.width = GAME_WIDTH;
+    canvas.height = GAME_HEIGHT;
 
     // Clear canvas
     ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -294,34 +296,34 @@ export default function ClickerGame() {
     // Draw bird details
     ctx.fillStyle = '#000';
     ctx.beginPath();
-    ctx.arc(10, -5, 5, 0, Math.PI * 2);
+    ctx.arc(5, -2, 2, 0, Math.PI * 2);
     ctx.fill();
     ctx.fillStyle = '#FF4500';
     ctx.beginPath();
-    ctx.moveTo(15, 0);
-    ctx.lineTo(25, -5);
-    ctx.lineTo(25, 5);
+    ctx.moveTo(7, 0);
+    ctx.lineTo(12, -2);
+    ctx.lineTo(12, 2);
     ctx.closePath();
     ctx.fill();
     ctx.restore();
 
     // Draw score
     ctx.fillStyle = '#000';
-    ctx.font = '48px "Press Start 2P"';
+    ctx.font = '24px "Press Start 2P"';
     ctx.textAlign = 'center';
-    ctx.fillText(score.toString(), canvas.width / 2, 100);
+    ctx.fillText(score.toString(), canvas.width / 2, 50);
 
     // Draw game over screen
     if (gameOver) {
       ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
       ctx.fillStyle = '#FFF';
-      ctx.font = '48px "Press Start 2P"';
-      ctx.textAlign = 'center';
-      ctx.fillText('Game Over!', canvas.width / 2, canvas.height / 2 - 50);
       ctx.font = '24px "Press Start 2P"';
+      ctx.textAlign = 'center';
+      ctx.fillText('Game Over!', canvas.width / 2, canvas.height / 2 - 25);
+      ctx.font = '16px "Press Start 2P"';
       ctx.fillText(`Score: ${score}`, canvas.width / 2, canvas.height / 2);
-      ctx.fillText(`High Score: ${highScore}`, canvas.width / 2, canvas.height / 2 + 50);
+      ctx.fillText(`High Score: ${highScore}`, canvas.width / 2, canvas.height / 2 + 25);
     }
   };
 
@@ -393,7 +395,7 @@ export default function ClickerGame() {
   };
 
   return (
-    <div className="relative w-full h-full">
+    <div className="relative w-[400px] h-[300px] bg-cyber-black rounded-lg overflow-hidden">
       <canvas
         ref={canvasRef}
         className="absolute inset-0"
@@ -402,12 +404,12 @@ export default function ClickerGame() {
       />
       {!gameStarted && !gameOver && (
         <div className="absolute inset-0 flex flex-col items-center justify-center bg-black bg-opacity-50">
-          <h2 className="text-4xl font-press-start text-cyber-pink mb-8">
+          <h2 className="text-2xl font-press-start text-cyber-pink mb-4">
             Flappy Bird
           </h2>
           <button
             onClick={startGame}
-            className="px-8 py-4 bg-cyber-pink text-white rounded-lg font-press-start hover:bg-cyber-purple transition-colors text-xl"
+            className="px-6 py-3 bg-cyber-pink text-white rounded-lg font-press-start hover:bg-cyber-purple transition-colors text-lg"
           >
             Start Game
           </button>
@@ -415,24 +417,24 @@ export default function ClickerGame() {
       )}
       {gameOver && (
         <div className="absolute inset-0 flex flex-col items-center justify-center bg-black bg-opacity-50">
-          <h2 className="text-4xl font-press-start text-cyber-pink mb-8">
+          <h2 className="text-2xl font-press-start text-cyber-pink mb-4">
             Game Over!
           </h2>
-          <div className="text-2xl font-press-start text-cyber-blue mb-8">
+          <div className="text-xl font-press-start text-cyber-blue mb-4">
             Score: {score}
           </div>
-          <div className="text-xl font-press-start text-cyber-blue mb-8">
+          <div className="text-lg font-press-start text-cyber-blue mb-4">
             High Score: {highScore}
           </div>
           <button
             onClick={startGame}
-            className="px-8 py-4 bg-cyber-pink text-white rounded-lg font-press-start hover:bg-cyber-purple transition-colors text-xl"
+            className="px-6 py-3 bg-cyber-pink text-white rounded-lg font-press-start hover:bg-cyber-purple transition-colors text-lg"
           >
             Play Again
           </button>
         </div>
       )}
-      <div className="absolute top-4 left-4 text-cyber-blue font-press-start">
+      <div className="absolute top-2 left-2 text-cyber-blue font-press-start text-sm">
         Power: {power}
       </div>
     </div>
