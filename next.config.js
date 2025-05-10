@@ -22,6 +22,13 @@ const nextConfig = {
         util: false,
       };
     }
+
+    // Add specific handling for undici
+    config.module.rules.push({
+      test: /node_modules\/undici/,
+      loader: 'ignore-loader',
+    });
+
     return config;
   },
 };
