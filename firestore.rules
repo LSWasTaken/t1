@@ -1,26 +1,83 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    
     // Players collection rules
     match /players/{playerId} {
-      allow read: if true;  // Anyone can read player data
-      allow create: if request.auth != null;  // Only authenticated users can create
-      allow update: if request.auth != null && request.auth.uid == playerId;  // Players can only update their own data
-      allow delete: if false;  // No deletions allowed
-    }
-    
-    // Matches collection rules
-    match /matches/{matchId} {
-      allow read: if true;  // Anyone can read match data
-      allow create: if request.auth != null;  // Authenticated users can create matches
-      allow update: if request.auth != null && 
-        (request.auth.uid == resource.data.player1Id || request.auth.uid == resource.data.player2Id);  // Only match participants can update
-      allow delete: if false;  // No deletions allowed
+      allow read: if true;
+      
+      allow create: if request.auth != null && 
+        request.auth.uid == playerId &&
+        request.resource.data.uid == request.auth.uid &&
+        request.resource.data.keys().hasAll(['uid', 'email', 'power', 'wins', 'losses']) &&
+        request.resource.data.power is number &&
+        request.resource.data.wins is number &&
+        request.resource.data.losses is number;
+        
+      allow update: if request.auth != null &&
+        (
+          request.auth.uid == playerId ||
+          resource.data.currentOpponent == request.auth.uid
+        ) &&
+        request.writeFields.hasOnly([
+          'power', 'wins', 'losses', 'lastMatch', 'username',
+          'inQueue', 'currentOpponent', 'status'
+        ]) &&
+        request.writeFieldTransforms.hasOnly(['lastMatch']);
+        
+      allow delete: if false;
+      allow list: if true;
     }
 
-    // Allow querying players collection
-    match /players/{playerId} {
-      allow list: if true;  // Allow listing all players
+    // Leaderboard collection rules
+    match /leaderboard/{playerId} {
+      // Allow everyone to read for displaying rankings
+      allow read, list: if true;
+
+      // Allow authenticated user to create their own score entry
+      allow create: if request.auth != null &&
+        request.auth.uid == playerId &&
+        request.resource.data.keys().hasAll(['uid', 'username', 'score', 'avatar', 'timePlayed']) &&
+        request.resource.data.uid == request.auth.uid &&
+        request.resource.data.score is number &&
+        request.resource.data.timePlayed is number &&
+        request.resource.data.username is string &&
+        request.resource.data.avatar is string;
+
+      // Allow user to update only their own score
+      allow update: if request.auth != null &&
+        request.auth.uid == playerId &&
+        request.resource.data.uid == request.auth.uid &&
+        request.writeFields.hasOnly(['score', 'timePlayed', 'lastUpdated']) &&
+        request.resource.data.score is number &&
+        request.resource.data.timePlayed is number;
+
+      // Prevent deletion of leaderboard entries
+      allow delete: if false;
+    }
+
+    // Matches collection rules
+    match /matches/{matchId} {
+      allow read: if true;
+      allow create: if request.auth != null;
+      allow update: if request.auth != null &&
+        (request.auth.uid == resource.data.player1Id || request.auth.uid == resource.data.player2Id);
+      allow delete: if false;
+    }
+
+    // Duel Requests collection rules
+    match /duelRequests/{requestId} {
+      allow read, create: if request.auth != null;
+      allow update: if request.auth != null &&
+        (request.auth.uid == resource.data.from || request.auth.uid == resource.data.to);
+      allow delete: if false;
+    }
+
+    // Battle History collection rules
+    match /battleHistory/{docId} {
+      allow read, create: if request.auth != null;
+      allow update: if request.auth != null;
+      allow delete: if false;
     }
   }
-} 
+}

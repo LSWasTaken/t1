@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useAuth } from '@/lib/auth';
 import { doc, getDoc } from 'firebase/firestore';
@@ -14,6 +14,12 @@ interface Player {
   avatar: string;
 }
 
+interface UserData {
+  username: string;
+  power: number;
+  avatar: string;
+}
+
 export default function CombatPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -21,10 +27,39 @@ export default function CombatPage() {
   const [opponent, setOpponent] = useState<Player | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [userData, setUserData] = useState<UserData | null>(null);
+  const [userHealth, setUserHealth] = useState(100);
+  const [opponentHealth, setOpponentHealth] = useState(100);
+  const [gameOver, setGameOver] = useState(false);
+  const [winner, setWinner] = useState<string | null>(null);
+
+  useEffect(() => {
+    const fetchUserData = async () => {
+      if (!user) return;
+      
+      try {
+        const userDoc = await getDoc(doc(db, 'users', user.uid));
+        if (userDoc.exists()) {
+          const data = userDoc.data() as UserData;
+          setUserData(data);
+        }
+      } catch (err) {
+        console.error('Error fetching user data:', err);
+      }
+    };
+
+    fetchUserData();
+  }, [user]);
 
   useEffect(() => {
     const fetchOpponent = async () => {
       try {
+        if (!searchParams) {
+          setError('Invalid URL parameters');
+          setLoading(false);
+          return;
+        }
+
         const opponentId = searchParams.get('opponent');
         if (!opponentId) {
           setError('No opponent specified');
@@ -39,7 +74,7 @@ export default function CombatPage() {
           return;
         }
 
-        const opponentData = opponentDoc.data();
+        const opponentData = opponentDoc.data() as UserData;
         setOpponent({
           id: opponentDoc.id,
           username: opponentData.username,
@@ -58,6 +93,30 @@ export default function CombatPage() {
       fetchOpponent();
     }
   }, [user, searchParams]);
+
+  const handleAttack = useCallback(() => {
+    if (!opponent || gameOver) return;
+
+    const damage = Math.floor(Math.random() * 20) + 1;
+    setOpponentHealth(prev => {
+      const newHealth = Math.max(prev - damage, 0);
+      if (newHealth === 0) {
+        setWinner(userData?.username || 'Player');
+        setGameOver(true);
+      }
+      return newHealth;
+    });
+
+    const opponentDamage = Math.floor(Math.random() * 20) + 1;
+    setUserHealth(prev => {
+      const newHealth = Math.max(prev - opponentDamage, 0);
+      if (newHealth === 0) {
+        setWinner(opponent.username);
+        setGameOver(true);
+      }
+      return newHealth;
+    });
+  }, [opponent, userData, gameOver]);
 
   if (!user) {
     return (
@@ -119,26 +178,41 @@ export default function CombatPage() {
           <div className="flex justify-between items-center mb-8">
             <div className="text-center">
               <img
-                src={user.avatar || '/default-avatar.png'}
-                alt={user.username}
+                src={userData?.avatar || '/default-avatar.png'}
+                alt={userData?.username || 'Player'}
                 className="w-24 h-24 rounded-full mx-auto mb-2"
               />
-              <h2 className="font-press-start text-cyber-blue">{user.username}</h2>
-              <p className="text-cyber-light-gray">Power: {user.power || 0}</p>
+              <h2 className="font-press-start text-cyber-white">{userData?.username || 'Player'}</h2>
+              <p className="text-cyber-light-gray">Power: {userData?.power || 0}</p>
+              <h2 className="font-press-start text-cyber-white">Your Health: {userHealth}</h2>
             </div>
-            <div className="text-4xl font-press-start text-cyber-yellow">VS</div>
+            <div className="text-4xl font-press-start text-cyber-white">VS</div>
             <div className="text-center">
               <img
                 src={opponent?.avatar || '/default-avatar.png'}
-                alt={opponent?.username}
+                alt={opponent?.username || 'Opponent'}
                 className="w-24 h-24 rounded-full mx-auto mb-2"
               />
-              <h2 className="font-press-start text-cyber-pink">{opponent?.username}</h2>
+              <h2 className="font-press-start text-cyber-white">{opponent?.username || 'Opponent'}</h2>
               <p className="text-cyber-light-gray">Power: {opponent?.power || 0}</p>
+              <h2 className="font-press-start text-cyber-white">Opponent Health: {opponentHealth}</h2>
             </div>
           </div>
 
-          <Combat opponent={opponent} />
+          <button onClick={handleAttack} className="cyber-button" disabled={gameOver}>
+            Attack
+          </button>
+
+          {gameOver && (
+            <div className="mt-4 text-center">
+              <h2 className="text-2xl font-press-start text-cyber-red">
+                {winner} Wins!
+              </h2>
+              <button onClick={() => router.push('/game')} className="cyber-button">
+                Return to Game
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </div>

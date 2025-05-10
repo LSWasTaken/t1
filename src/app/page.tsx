@@ -11,10 +11,10 @@ export default function Home() {
       <div className="container mx-auto px-4 py-16">
         <div className="text-center">
           <h1 className="font-press-start text-4xl md:text-6xl mb-8 text-cyber-pink">
-            Cyberpunk Game
+            LSf Game!
           </h1>
           <p className="text-xl mb-12 text-cyber-blue">
-            Welcome to the future of gaming
+            Welcome to the Ewan ko!
           </p>
           
           {user ? (

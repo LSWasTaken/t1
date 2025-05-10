@@ -138,8 +138,8 @@ export default function Profile({ selectedPlayer }: ProfileProps) {
             <>
               {selectedPlayer.username || selectedPlayer.email?.split('@')[0] || 'Anonymous'}
               <button
+                className="ml-4 px-4 py-2 bg-cyber-red text-white border-2 border-cyber-red rounded-lg font-press-start shadow-lg shadow-cyber-red/40 hover:bg-red-700 hover:shadow-cyber-red/80 transition-all duration-200 red-glow"
                 onClick={() => requestDuel(selectedPlayer.uid)}
-                className="ml-4 px-4 py-2 bg-cyber-pink text-white rounded-lg font-press-start hover:bg-cyber-purple transition-colors"
               >
                 Challenge
               </button>

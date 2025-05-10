@@ -14,23 +14,24 @@ const config: Config = {
         'cyber-light-gray': '#333333',
         'cyber-lighter-gray': '#4a4a4a',
         'cyber-white': '#ffffff',
-        'cyber-blue': '#00ffff',
-        'cyber-pink': '#ff00ff',
-        'cyber-yellow': '#ffff00',
-        'cyber-green': '#00ff00',
-        'cyber-red': '#ff0000',
+        'cyber-accent': '#666666',
+        'cyber-hover': '#808080',
       },
       fontFamily: {
         'press-start': ['"Press Start 2P"', 'cursive'],
       },
       animation: {
-        'rainbow': 'rainbow 3s linear infinite',
+        'pulse': 'pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite',
+        'spin': 'spin 1s linear infinite',
       },
       keyframes: {
-        rainbow: {
-          '0%': { backgroundPosition: '0% 50%' },
-          '50%': { backgroundPosition: '100% 50%' },
-          '100%': { backgroundPosition: '0% 50%' },
+        pulse: {
+          '0%, 100%': { opacity: '1' },
+          '50%': { opacity: '0.5' },
+        },
+        spin: {
+          '0%': { transform: 'rotate(0deg)' },
+          '100%': { transform: 'rotate(360deg)' },
         },
       },
     },

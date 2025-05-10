@@ -3,13 +3,17 @@ import { Inter } from 'next/font/google'
 import { ToastContainer } from 'react-toastify'
 import 'react-toastify/dist/ReactToastify.css'
 import { AuthProvider } from '@/lib/auth'
-import ClientLayout from './ClientLayout'
+import React, { ReactNode } from 'react';
+
+const ClientLayout: React.FC<{ children: ReactNode }> = ({ children }) => {
+  return <div>{children}</div>;
+};
 
 const inter = Inter({ subsets: ['latin'] })
 
 export const metadata = {
-  title: 'Tanza Fighter - Cyberpunk Clicker Game',
-  description: 'A cyberpunk-themed clicker game where you fight your way to the top!',
+  title: 'Tanza Fighter',
+  description: 'game where you fight your way to the top!',
 }
 
 export default function RootLayout({

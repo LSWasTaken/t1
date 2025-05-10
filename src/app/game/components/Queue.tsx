@@ -1,602 +1,493 @@
-'use client';
+import React, { useState, useEffect, useCallback } from 'react';
+import {
+  doc,
+  runTransaction,
+  getDoc,
+  updateDoc,
+  collection,
+  query,
+  where,
+  getDocs,
+  onSnapshot, // For real-time listeners
+  serverTimestamp,
+  FieldValue,
+  limit // For limiting query results
+} from 'firebase/firestore';
+import { auth } from '@/lib/firebase';
 
-import { useState, useEffect, useCallback } from 'react';
-import { useAuth } from '@/lib/auth';
-import { db } from '@/lib/firebase';
-import { doc, updateDoc, serverTimestamp, collection, query, where, getDocs, getDoc, orderBy, onSnapshot, runTransaction } from 'firebase/firestore';
-import { useRouter } from 'next/navigation';
+// --- Interfaces ---
+interface Player {
+  uid: string;
+  username: string;
+  inQueue?: boolean;
+  currentOpponent?: string | null;
+  status?: 'online' | 'in_game' | 'offline' | 'challenging'; // Added 'challenging'
+  lastMatch?: FieldValue;
+  challengeFrom?: string | null;
+}
 
 interface QueueProps {
-  onMatchFound: (opponent: any) => void;
-  onQueueUpdate: (inQueue: boolean) => void;
+  user: any; // Authenticated user object (e.g., from Firebase Auth)
+  db: any;   // Firestore instance
+  onQueueUpdate: (isInQueue: boolean) => void; // Callback when queue status changes
+  onMatchFound: (opponent: Player) => void;  // Callback when a match is made
 }
 
-interface Player {
-  id: string;
-  uid: string;
-  username?: string;
-  email?: string;
-  power: number;
-  inQueue: boolean;
-  currentOpponent?: string;
-  lastMatch?: any;
-  status?: 'online' | 'offline' | 'in_game';
+interface BattleLogEntry {
+  message: string;
+  timestamp: Date;
+  type: 'info' | 'error' | 'success' | 'system' | 'action';
 }
 
-export default function Queue({ onMatchFound, onQueueUpdate }: QueueProps) {
-  const { user } = useAuth();
-  const router = useRouter();
-  const [isInQueue, setIsInQueue] = useState(false);
-  const [isSearching, setIsSearching] = useState(false);
-  const [queueTime, setQueueTime] = useState(0);
-  const [queueTimer, setQueueTimer] = useState<NodeJS.Timeout | null>(null);
-  const [queuePosition, setQueuePosition] = useState(0);
-  const [estimatedTime, setEstimatedTime] = useState(0);
-  const [battleLog, setBattleLog] = useState<string[]>([]);
-  const [friendUsername, setFriendUsername] = useState('');
-  const [isDirectChallenge, setIsDirectChallenge] = useState(false);
-  const [challengeStatus, setChallengeStatus] = useState<'none' | 'sent' | 'received'>('none');
-  const [challengeFrom, setChallengeFrom] = useState<string | null>(null);
-  const [challengeTimeout, setChallengeTimeout] = useState<NodeJS.Timeout | null>(null);
-  const [recentOpponents, setRecentOpponents] = useState<Player[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
+// --- Component ---
+const QueueComponent: React.FC<QueueProps> = ({ user, db, onQueueUpdate, onMatchFound }) => {
+  // --- Local State ---
   const [error, setError] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [isProcessing, setIsProcessing] = useState<boolean>(false); // For specific button actions
 
-  // Add log with timestamp
-  const addLog = useCallback((message: string) => {
-    const timestamp = new Date().toLocaleTimeString();
-    setBattleLog(prev => [...prev, `[${timestamp}] ${message}`]);
+  // Player document state (from Firestore listener)
+  const [playerData, setPlayerData] = useState<Player | null>(null);
+  
+  // UI interaction states
+  const [friendUsernameInput, setFriendUsernameInput] = useState<string>('');
+  
+  // Battle Log
+  const [battleLogs, setBattleLogs] = useState<BattleLogEntry[]>([]);
+
+  // Online players & opponent states
+  const [onlinePlayersCount, setOnlinePlayersCount] = useState<number>(0);
+  const [onlinePlayersList, setOnlinePlayersList] = useState<Player[]>([]);
+  const [currentOpponentDetails, setCurrentOpponentDetails] = useState<Player | null>(null);
+
+  // --- Logging ---
+  const logMessage = useCallback((message: string, type: BattleLogEntry['type'] = 'info') => {
+    console.log(`[BattleLog - ${type.toUpperCase()}]: ${message}`);
+    setBattleLogs(prevLogs => {
+      const newLog = { message, timestamp: new Date(), type };
+      const MAX_LOGS = 50;
+      const updatedLogs = [...prevLogs, newLog];
+      return updatedLogs.slice(-MAX_LOGS);
+    });
   }, []);
 
-  // Queue timeout effect with improved cleanup
+  // --- Firestore Real-time Listeners ---
+
+  // 1. Listener for the current player's document
   useEffect(() => {
-    let timer: NodeJS.Timeout;
-    if (isInQueue && !isDirectChallenge) {
-      timer = setInterval(() => {
-        setQueueTime(prev => prev + 1);
-        setEstimatedTime(Math.max(0, estimatedTime - 1));
-      }, 1000);
+    if (!user || !db) {
+      setPlayerData(null); // Clear player data if no user or db
+      return;
     }
-    return () => {
-      if (timer) clearInterval(timer);
-    };
-  }, [isInQueue, isDirectChallenge, estimatedTime]);
-
-  // Challenge timeout effect
-  useEffect(() => {
-    if (challengeStatus === 'sent') {
-      const timeout = setTimeout(() => {
-        if (challengeStatus === 'sent') {
-          rejectChallenge();
-          addLog('Challenge timed out');
-        }
-      }, 30000); // 30 second timeout
-      setChallengeTimeout(timeout);
-    }
-    return () => {
-      if (challengeTimeout) clearTimeout(challengeTimeout);
-    };
-  }, [challengeStatus]);
-
-  // Real-time queue position updates with improved matching
-  useEffect(() => {
-    if (!user || !isInQueue || isDirectChallenge) return;
-
-    const q = query(
-      collection(db, 'players'),
-      where('inQueue', '==', true),
-      where('currentOpponent', '==', null),
-      where('status', '==', 'online')
-    );
-
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const players = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      } as Player));
-
-      const position = players.findIndex(p => p.uid === user.uid) + 1;
-      setQueuePosition(position);
-      
-      // Improved time estimation based on queue size and position
-      const baseTime = 30;
-      const queueSize = players.length;
-      const positionMultiplier = Math.max(1, position / Math.max(1, queueSize / 2));
-      setEstimatedTime(Math.ceil(baseTime * positionMultiplier));
-
-      // Improved matching algorithm
-      if (players.length > 1) {
-        const potentialOpponents = players.filter(p => p.uid !== user.uid);
-        if (potentialOpponents.length > 0) {
-          // Try to match with similar power level first
-          const playerPower = players.find(p => p.uid === user.uid)?.power || 0;
-          const sortedOpponents = potentialOpponents.sort((a, b) => {
-            const powerDiffA = Math.abs((a.power || 0) - playerPower);
-            const powerDiffB = Math.abs((b.power || 0) - playerPower);
-            return powerDiffA - powerDiffB;
-          });
-
-          // Take the closest power match or random if no good match
-          const selectedOpponent = sortedOpponents[0];
-          handleMatchFound(selectedOpponent);
-        }
-      }
-    });
-
-    return () => unsubscribe();
-  }, [user, isInQueue, isDirectChallenge]);
-
-  // Real-time challenge updates with improved state management
-  useEffect(() => {
-    if (!user) return;
 
     const playerRef = doc(db, 'players', user.uid);
-    const unsubscribe = onSnapshot(playerRef, (doc) => {
-      const playerData = doc.data();
-      if (playerData) {
-        setIsInQueue(playerData.inQueue || false);
-        setIsDirectChallenge(!!playerData.currentOpponent);
-        onQueueUpdate(playerData.inQueue || false);
+    const unsubscribePlayer = onSnapshot(playerRef, async (docSnap) => {
+      if (docSnap.exists()) {
+        const currentPlayerData = { uid: docSnap.id, ...docSnap.data() } as Player;
+        setPlayerData(currentPlayerData);
+        logMessage(`Player data updated: Status - ${currentPlayerData.status}`, 'system');
 
-        // Check for incoming challenges
-        if (playerData.currentOpponent && !playerData.inQueue) {
-          setChallengeStatus('received');
-          setChallengeFrom(playerData.currentOpponent);
-          addLog(`Challenge received from ${playerData.currentOpponent}`);
+        // Update overall queue status for parent components
+        onQueueUpdate(currentPlayerData.inQueue || false);
+
+        // Handle opponent details
+        if (currentPlayerData.currentOpponent) {
+          if (!currentOpponentDetails || currentOpponentDetails.uid !== currentPlayerData.currentOpponent) {
+            logMessage(`Workspaceing opponent details for UID: ${currentPlayerData.currentOpponent}`, 'system');
+            const opponentDocRef = doc(db, 'players', currentPlayerData.currentOpponent);
+            const opponentDocSnap = await getDoc(opponentDocRef);
+            if (opponentDocSnap.exists()) {
+              const opponentData = { uid: opponentDocSnap.id, ...opponentDocSnap.data() } as Player;
+              setCurrentOpponentDetails(opponentData);
+              logMessage(`Opponent: ${opponentData.username || 'Unknown'}`, 'info');
+              if (currentPlayerData.status === 'in_game') { // If actively in game with this opponent
+                onMatchFound(opponentData);
+              }
+            } else {
+              logMessage(`Opponent UID ${currentPlayerData.currentOpponent} not found.`, 'error');
+              setCurrentOpponentDetails(null);
+            }
+          }
+        } else {
+          if (currentOpponentDetails) { // If there was an opponent but now there isn't
+             logMessage(`Opponent cleared. Was: ${currentOpponentDetails.username}`, 'system');
+          }
+          setCurrentOpponentDetails(null);
         }
+      } else {
+        logMessage('Player document does not exist. User might need to be initialized.', 'error');
+        setPlayerData(null);
+        // Consider redirecting or showing an error to create player profile
       }
-      setIsLoading(false);
+    }, (err) => {
+      logMessage(`Error listening to player document: ${err.message}`, 'error');
+      setError('Failed to sync player data.');
     });
 
-    return () => unsubscribe();
-  }, [user, onQueueUpdate, addLog]);
+    return () => unsubscribePlayer();
+  }, [user, db, logMessage, onQueueUpdate, onMatchFound, currentOpponentDetails]); // Added currentOpponentDetails
 
-  // Load recent opponents
+  // 2. Listener for online players (count and list)
   useEffect(() => {
-    if (!user) return;
+    if (!db) return;
 
-    const loadRecentOpponents = async () => {
-      try {
-        const playerRef = doc(db, 'players', user.uid);
-        const playerDoc = await getDoc(playerRef);
-        const playerData = playerDoc.data();
-        
-        if (playerData?.lastMatches) {
-          const opponentIds = playerData.lastMatches.slice(0, 5);
-          const opponents = await Promise.all(
-            opponentIds.map(async (id: string) => {
-              const opponentDoc = await getDoc(doc(db, 'players', id));
-              return { id: opponentDoc.id, ...opponentDoc.data() } as Player;
-            })
-          );
-          setRecentOpponents(opponents);
-        }
-      } catch (error) {
-        console.error('Error loading recent opponents:', error);
-      }
-    };
-
-    loadRecentOpponents();
-  }, [user]);
-
-  const handleMatchFound = async (opponent: Player) => {
-    if (!user) return;
-
-    try {
-      await runTransaction(db, async (transaction) => {
-        const playerRef = doc(db, 'players', user.uid);
-        const opponentRef = doc(db, 'players', opponent.uid);
-
-        const playerDoc = await transaction.get(playerRef);
-        const opponentDoc = await transaction.get(opponentRef);
-
-        if (!playerDoc.exists() || !opponentDoc.exists()) {
-          throw new Error('Player or opponent not found');
-        }
-
-        const playerData = playerDoc.data();
-        const opponentData = opponentDoc.data();
-
-        if (!playerData.inQueue || !opponentData.inQueue) {
-          throw new Error('One of the players is no longer in queue');
-        }
-
-        transaction.update(playerRef, {
-          inQueue: false,
-          lastMatch: serverTimestamp(),
-          currentOpponent: opponent.uid,
-          status: 'in_game'
-        });
-
-        transaction.update(opponentRef, {
-          inQueue: false,
-          lastMatch: serverTimestamp(),
-          currentOpponent: user.uid,
-          status: 'in_game'
-        });
-      });
-
-      setIsInQueue(false);
-      setIsDirectChallenge(true);
-      onQueueUpdate(false);
-      onMatchFound(opponent);
-      addLog(`Match found! You'll compete against ${opponent.username || 'Anonymous'} in a clicking speed challenge!`);
-
-      // Redirect to combat page with opponent ID
-      router.push(`/combat?opponent=${opponent.id}`);
-    } catch (error) {
-      console.error('Error handling match:', error);
-      addLog('Error finding match. Please try again.');
-      setError('Failed to start match');
-    }
-  };
-
-  const joinQueue = async () => {
-    if (!user) return;
-    if (isInQueue) {
-      addLog('You are already in queue!');
-      return;
-    }
-
-    setIsSearching(true);
-    try {
-      await runTransaction(db, async (transaction) => {
-        const playerRef = doc(db, 'players', user.uid);
-        const playerDoc = await transaction.get(playerRef);
-
-        if (!playerDoc.exists()) {
-          throw new Error('Player not found');
-        }
-
-        const playerData = playerDoc.data();
-        if (playerData.inQueue || playerData.currentOpponent) {
-          throw new Error('Player is already in a match');
-        }
-
-        transaction.update(playerRef, {
-          inQueue: true,
-          lastMatch: serverTimestamp(),
-          currentOpponent: null,
-          status: 'online'
-        });
-      });
-
-      setIsInQueue(true);
-      setIsDirectChallenge(false);
-      onQueueUpdate(true);
-      addLog('Joined queue!');
-      setQueueTime(0);
-      setQueuePosition(0);
-      setEstimatedTime(30);
-    } catch (error) {
-      console.error('Error joining queue:', error);
-      addLog('Failed to join queue. Please try again.');
-      setIsInQueue(false);
-      onQueueUpdate(false);
-    } finally {
-      setIsSearching(false);
-    }
-  };
-
-  const challengeFriend = async () => {
-    if (!user || !friendUsername) return;
-    if (isInQueue) {
-      addLog('You are already in a challenge!');
-      return;
-    }
-
-    setIsSearching(true);
-    try {
-      await runTransaction(db, async (transaction) => {
-        const q = query(
-          collection(db, 'players'),
-          where('username', '==', friendUsername)
-        );
-        const querySnapshot = await getDocs(q);
-        
-        if (querySnapshot.empty) {
-          throw new Error('Friend not found');
-        }
-
-        const friendDoc = querySnapshot.docs[0];
-        const friendData = friendDoc.data() as Player;
-
-        if (friendData.uid === user.uid) {
-          throw new Error('Cannot challenge yourself');
-        }
-
-        if (friendData.inQueue || friendData.currentOpponent) {
-          throw new Error('Friend is already in a match');
-        }
-
-        const playerRef = doc(db, 'players', user.uid);
-        const friendRef = doc(db, 'players', friendData.uid);
-
-        transaction.update(friendRef, {
-          currentOpponent: user.uid,
-          status: 'online'
-        });
-
-        transaction.update(playerRef, {
-          inQueue: true,
-          lastMatch: serverTimestamp(),
-          currentOpponent: friendData.uid,
-          status: 'online'
-        });
-      });
-
-      setIsInQueue(true);
-      setIsDirectChallenge(true);
-      setChallengeStatus('sent');
-      onQueueUpdate(true);
-      addLog(`Challenge sent to ${friendUsername}!`);
-    } catch (error) {
-      console.error('Error challenging friend:', error);
-      addLog(error instanceof Error ? error.message : 'Failed to send challenge. Please try again.');
-    } finally {
-      setIsSearching(false);
-    }
-  };
-
-  const acceptChallenge = async () => {
-    if (!user || !challengeFrom) return;
-
-    try {
-      await runTransaction(db, async (transaction) => {
-        const playerRef = doc(db, 'players', user.uid);
-        const opponentRef = doc(db, 'players', challengeFrom);
-
-        const playerDoc = await transaction.get(playerRef);
-        const opponentDoc = await transaction.get(opponentRef);
-
-        if (!playerDoc.exists() || !opponentDoc.exists()) {
-          throw new Error('Player or opponent not found');
-        }
-
-        transaction.update(playerRef, {
-          inQueue: true,
-          lastMatch: serverTimestamp(),
-          currentOpponent: challengeFrom,
-          status: 'in_game'
-        });
-
-        transaction.update(opponentRef, {
-          inQueue: true,
-          lastMatch: serverTimestamp(),
-          currentOpponent: user.uid,
-          status: 'in_game'
-        });
-      });
-
-      setIsInQueue(true);
-      setIsDirectChallenge(true);
-      setChallengeStatus('none');
-      onQueueUpdate(true);
-      addLog('Challenge accepted!');
-    } catch (error) {
-      console.error('Error accepting challenge:', error);
-      addLog('Failed to accept challenge. Please try again.');
-    }
-  };
-
-  const rejectChallenge = async () => {
-    if (!user || !challengeFrom) return;
-
-    try {
-      await runTransaction(db, async (transaction) => {
-        const playerRef = doc(db, 'players', user.uid);
-        const opponentRef = doc(db, 'players', challengeFrom);
-
-        transaction.update(playerRef, {
-          inQueue: false,
-          currentOpponent: null,
-          status: 'online'
-        });
-
-        transaction.update(opponentRef, {
-          inQueue: false,
-          currentOpponent: null,
-          status: 'online'
-        });
-      });
-
-      setChallengeStatus('none');
-      setChallengeFrom(null);
-      addLog('Challenge rejected.');
-    } catch (error) {
-      console.error('Error rejecting challenge:', error);
-      addLog('Failed to reject challenge. Please try again.');
-    }
-  };
-
-  const leaveQueue = async () => {
-    if (!user) return;
-    
-    try {
-      await runTransaction(db, async (transaction) => {
-        const playerRef = doc(db, 'players', user.uid);
-        const playerDoc = await transaction.get(playerRef);
-        
-        if (!playerDoc.exists()) {
-          throw new Error('Player not found');
-        }
-
-        const playerData = playerDoc.data();
-        transaction.update(playerRef, {
-          inQueue: false,
-          lastMatch: serverTimestamp(),
-          currentOpponent: null,
-          status: 'online'
-        });
-
-        if (playerData.currentOpponent) {
-          const opponentRef = doc(db, 'players', playerData.currentOpponent);
-          transaction.update(opponentRef, {
-            inQueue: false,
-            lastMatch: serverTimestamp(),
-            currentOpponent: null,
-            status: 'online'
-          });
-        }
-      });
-
-      // Clear any existing timers
-      if (queueTimer) {
-        clearInterval(queueTimer);
-        setQueueTimer(null);
-      }
-      if (challengeTimeout) {
-        clearTimeout(challengeTimeout);
-        setChallengeTimeout(null);
-      }
-
-      // Reset all queue-related state
-      setIsInQueue(false);
-      setIsDirectChallenge(false);
-      setQueueTime(0);
-      setQueuePosition(0);
-      setEstimatedTime(0);
-      setFriendUsername('');
-      setChallengeStatus('none');
-      setChallengeFrom(null);
-      addLog('Left the queue');
-      onQueueUpdate(false);
-    } catch (error) {
-      console.error('Error leaving queue:', error);
-      // Try to force reset the queue state even if the update fails
-      setIsInQueue(false);
-      setIsDirectChallenge(false);
-      onQueueUpdate(false);
-      addLog('Failed to leave queue. Please try again.');
-    }
-  };
-
-  const challengeRecentOpponent = (opponent: Player) => {
-    setFriendUsername(opponent.username || '');
-    challengeFriend();
-  };
-
-  if (isLoading) {
-    return (
-      <div className="bg-gray-900 rounded-lg p-6 space-y-4">
-        <div className="text-gray-300 text-center">Loading...</div>
-      </div>
+    // Query for a list of online players (limited for performance)
+    const onlineListQuery = query(
+      collection(db, 'players'),
+      where('status', '==', 'online'),
+      limit(10) // Display up to 10 online players in the list
     );
-  }
+    const unsubscribeOnlineList = onSnapshot(onlineListQuery, (snapshot) => {
+      const players: Player[] = [];
+      snapshot.forEach(docSnap => players.push({ uid: docSnap.id, ...docSnap.data() } as Player));
+      setOnlinePlayersList(players);
+    }, (err) => {
+      logMessage(`Error fetching online players list: ${err.message}`, 'error');
+    });
+
+    // Query for the total count of online players (more reads, consider aggregation for scale)
+    const onlineCountQuery = query(collection(db, 'players'), where('status', '==', 'online'));
+    const unsubscribeOnlineCount = onSnapshot(onlineCountQuery, (snapshot) => {
+      setOnlinePlayersCount(snapshot.size);
+    }, (err) => {
+      logMessage(`Error fetching online player count: ${err.message}`, 'error');
+    });
+    
+    return () => {
+      unsubscribeOnlineList();
+      unsubscribeOnlineCount();
+    };
+  }, [db, logMessage]);
+
+  // --- Action Functions ---
+
+  const handleSignOut = async () => {
+    if (!user) { logMessage('No user to sign out.', 'error'); return; }
+    logMessage('Signing out...', 'action');
+    setIsProcessing(true); setError(null);
+    try {
+      // First reset the player state
+      const playerRef = doc(db, 'players', user.uid);
+      await updateDoc(playerRef, {
+        inQueue: false,
+        status: 'offline',
+        currentOpponent: null
+      });
+      logMessage('Player state reset successfully.', 'success');
+      
+      // Then sign out
+      await auth.signOut();
+      logMessage('Signed out successfully.', 'success');
+    } catch (err: any) {
+      logMessage(`Error signing out: ${err.message}`, 'error');
+      setError(err.message);
+    } finally { 
+      setIsProcessing(false);
+    }
+  };
+
+  const handleResetPlayerState = async () => {
+    if (!user) { logMessage('User not authenticated.', 'error'); return; }
+    logMessage('Resetting player state...', 'action');
+    setIsProcessing(true); setError(null);
+    try {
+      const playerRef = doc(db, 'players', user.uid);
+      await updateDoc(playerRef, {
+        inQueue: false,
+        status: 'online',
+        currentOpponent: null
+      });
+      logMessage('Player state reset successfully.', 'success');
+    } catch (err: any) {
+      logMessage(`Error resetting state: ${err.message}`, 'error'); setError(err.message);
+    } finally { setIsProcessing(false); }
+  };
+  
+  const handleJoinQueue = async () => {
+    if (!user || !playerData) { logMessage('Player data not available.', 'error'); return; }
+    if (playerData.inQueue || playerData.currentOpponent || playerData.challengeFrom) {
+      logMessage('Already in a queue or involved in a challenge.', 'info'); return;
+    }
+    logMessage('Joining random queue...', 'action');
+    setIsProcessing(true); setError(null);
+    try {
+      const playerRef = doc(db, 'players', user.uid);
+      await updateDoc(playerRef, {
+        inQueue: true, status: 'online', currentOpponent: null, challengeFrom: null, lastMatch: serverTimestamp()
+      });
+      logMessage('Successfully joined queue.', 'success');
+    } catch (err: any) {
+      logMessage(`Error joining queue: ${err.message}`, 'error'); setError(err.message);
+    } finally { setIsProcessing(false); }
+  };
+
+  const handleLeaveOrCancel = async () => { // Cancels queue search, or a challenge you sent
+    if (!user || !playerData) { logMessage('Player data not available.', 'error'); return; }
+    logMessage('Leaving queue / Cancelling action...', 'action');
+    setIsProcessing(true); setError(null);
+    try {
+      const playerRef = doc(db, 'players', user.uid);
+      const updates = {
+        inQueue: false,
+        status: 'online',
+        currentOpponent: null
+      };
+      
+      if (playerData.status === 'challenging' && playerData.currentOpponent) {
+        try {
+          // If cancelling a challenge sent to someone, also clear their 'challengeFrom' field.
+          const opponentRef = doc(db, 'players', playerData.currentOpponent);
+          // This should ideally be in a transaction if both must succeed.
+          await updateDoc(opponentRef, { status: 'online' });
+          logMessage(`Cancelled challenge sent to ${playerData.currentOpponent}.`, 'system');
+        } catch (opponentErr: any) {
+          // Log but don't fail the whole operation if opponent update fails
+          logMessage(`Warning: Could not update opponent state: ${opponentErr.message}`, 'error');
+        }
+      }
+      
+      try {
+        await updateDoc(playerRef, updates);
+        logMessage('Action cancelled successfully.', 'success');
+      } catch (updateErr: any) {
+        if (updateErr.message.includes('ERR_BLOCKED_BY_CLIENT')) {
+          logMessage('Network request was blocked. Please check your browser extensions or try again.', 'error');
+          setError('Network request blocked. Please disable ad blockers or try again.');
+        } else {
+          throw updateErr; // Re-throw other errors
+        }
+      }
+    } catch (err: any) {
+      logMessage(`Error leaving/cancelling: ${err.message}`, 'error');
+      setError(err.message);
+    } finally { 
+      setIsProcessing(false);
+    }
+  };
+
+  const handleChallengeFriend = async () => {
+    const targetUsername = friendUsernameInput.trim();
+    if (!user || !playerData) { logMessage('Player data not available.', 'error'); return; }
+    if (!targetUsername) { logMessage('Enter friend\'s username.', 'info'); return; }
+    if (targetUsername === playerData.username) { logMessage('Cannot challenge yourself.', 'info'); return; }
+
+    logMessage(`Challenging ${targetUsername}...`, 'action');
+    setIsProcessing(true); setError(null);
+    try {
+      const q = query(collection(db, 'players'), where('username', '==', targetUsername));
+      const snapshot = await getDocs(q);
+      if (snapshot.empty) throw new Error(`User '${targetUsername}' not found.`);
+      
+      const friendDoc = snapshot.docs[0];
+      const friendData = friendDoc.data() as Player;
+      if (friendData.status !== 'online' || friendData.challengeFrom || friendData.currentOpponent) {
+        throw new Error(`${targetUsername} is busy or not available.`);
+      }
+
+      // Use a transaction to ensure atomicity
+      await runTransaction(db, async (transaction) => {
+        const playerRef = doc(db, 'players', user.uid);
+        const friendRef = doc(db, 'players', friendDoc.id);
+
+        // Re-check friend's availability within transaction
+        const friendSnapTx = await transaction.get(friendRef);
+        if (!friendSnapTx.exists()) throw new Error("Friend vanished!");
+        const friendDataTx = friendSnapTx.data() as Player;
+        if (friendDataTx.status !== 'online' || friendDataTx.challengeFrom || friendDataTx.currentOpponent) {
+          throw new Error(`${targetUsername} became busy.`);
+        }
+
+        transaction.update(playerRef, { status: 'challenging', currentOpponent: friendDoc.id, inQueue: false, challengeFrom: null });
+        transaction.update(friendRef, { challengeFrom: user.uid });
+      });
+
+      logMessage(`Challenge sent to ${targetUsername}.`, 'success');
+      setFriendUsernameInput('');
+    } catch (err: any) {
+      logMessage(`Error challenging: ${err.message}`, 'error'); setError(err.message);
+    } finally { setIsProcessing(false); }
+  };
+
+  const handleAcceptChallenge = async () => {
+    if (!user || !playerData || !playerData.challengeFrom) { logMessage('No challenge to accept or player data missing.', 'error'); return; }
+    logMessage(`Accepting challenge from ${playerData.challengeFrom}...`, 'action');
+    setIsProcessing(true); setError(null);
+    try {
+      await runTransaction(db, async (transaction) => {
+        const playerRef = doc(db, 'players', user.uid);
+        const challengerRef = doc(db, 'players', playerData.challengeFrom!);
+
+        const playerSnapTx = await transaction.get(playerRef);
+        const challengerSnapTx = await transaction.get(challengerRef);
+
+        if (!playerSnapTx.exists() || !challengerSnapTx.exists()) throw new Error("One or both players not found.");
+        if (playerSnapTx.data()?.challengeFrom !== playerData.challengeFrom) throw new Error("Challenge expired or changed.");
+        if (challengerSnapTx.data()?.currentOpponent !== user.uid || challengerSnapTx.data()?.status !== 'challenging') {
+            throw new Error("Challenger is no longer challenging you or is busy.");
+        }
+
+        transaction.update(playerRef, { status: 'in_game', currentOpponent: playerData.challengeFrom, inQueue: false, challengeFrom: null });
+        transaction.update(challengerRef, { status: 'in_game', currentOpponent: user.uid, inQueue: false });
+      });
+      logMessage('Challenge accepted! Match starting.', 'success');
+    } catch (err: any) {
+      logMessage(`Error accepting challenge: ${err.message}`, 'error'); setError(err.message);
+    } finally { setIsProcessing(false); }
+  };
+
+  const handleDeclineChallenge = async () => {
+    if (!user || !playerData || !playerData.challengeFrom) { logMessage('No challenge to decline.', 'error'); return; }
+    logMessage(`Declining challenge from ${playerData.challengeFrom}...`, 'action');
+    setIsProcessing(true); setError(null);
+    try {
+      // Update both player and (former) challenger
+      const playerRef = doc(db, 'players', user.uid);
+      const challengerRef = doc(db, 'players', playerData.challengeFrom); // UID of who challenged us
+      
+      await updateDoc(playerRef, { challengeFrom: null, status: 'online' }); // Clear challenge from us
+      await updateDoc(challengerRef, { currentOpponent: null, status: 'online' }); // Reset challenger's state
+
+      logMessage('Challenge declined.', 'success');
+    } catch (err: any) {
+      logMessage(`Error declining challenge: ${err.message}`, 'error'); setError(err.message);
+    } finally { setIsProcessing(false); }
+  };
+
+
+  // --- Render Logic ---
+  const canJoinQueue = playerData?.status === 'online' && !playerData.inQueue && !playerData.currentOpponent && !playerData.challengeFrom;
+  const canChallengeFriend = playerData?.status === 'online' && !playerData.inQueue && !playerData.currentOpponent && !playerData.challengeFrom;
+  const isInQueueSearching = playerData?.inQueue && !playerData.currentOpponent && playerData.status === 'online';
+  const isChallengeSent = playerData?.status === 'challenging' && playerData.currentOpponent && !playerData.challengeFrom;
+  const hasIncomingChallenge = playerData?.challengeFrom && !playerData.currentOpponent;
+  const isInGame = playerData?.status === 'in_game' && playerData.currentOpponent;
 
   return (
-    <div className="bg-gray-900 rounded-lg p-6 space-y-4">
-      <h2 className="text-2xl font-press-start text-gray-200 text-center">
-        Clicking Speed Challenge
+    <div className="bg-neutral-900 text-neutral-300 p-4 sm:p-5 space-y-3 rounded-lg shadow-xl max-w-lg mx-auto"> {/* Removed font-mono from base */}
+      <h2 className="text-xl sm:text-2xl font-semibold text-neutral-100 text-center font-mono"> {/* Kept font-mono for title */}
+        Game Hub
       </h2>
 
-      {challengeStatus === 'received' && (
-        <div className="space-y-4">
-          <div className="text-gray-300 text-center text-lg">
-            Challenge from {challengeFrom}!
-          </div>
-          <div className="flex space-x-4">
-            <button
-              onClick={acceptChallenge}
-              className="flex-1 px-6 py-4 bg-gray-700 text-white rounded-lg font-press-start hover:bg-gray-600 transition-colors"
-            >
-              Accept
-            </button>
-            <button
-              onClick={rejectChallenge}
-              className="flex-1 px-6 py-4 bg-gray-900 border-2 border-gray-700 text-gray-300 rounded-lg font-press-start hover:bg-gray-800 transition-colors"
-            >
-              Reject
-            </button>
-          </div>
+      {/* Info Boxes */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+        <div className="bg-neutral-800 p-2.5 rounded-md border border-neutral-700/60">
+          <h3 className="font-semibold text-neutral-200 mb-1">Online: {onlinePlayersCount}</h3>
+          {onlinePlayersList.length > 0 ? (
+            <ul className="max-h-16 overflow-y-auto space-y-0.5 text-neutral-400">
+              {onlinePlayersList.map(p => <li key={p.uid} className="truncate">{p.username || p.uid}</li>)}
+            </ul>
+          ) : <p className="text-neutral-500 italic">Quiet for now...</p>}
+          {onlinePlayersList.length >= 10 && <p className="text-neutral-600 text-xs mt-0.5">Showing first 10.</p>}
         </div>
-      )}
-
-      {!isInQueue && challengeStatus === 'none' && (
-        <div className="space-y-4">
-          <div className="space-y-2">
-            <input
-              type="text"
-              value={friendUsername}
-              onChange={(e) => setFriendUsername(e.target.value)}
-              placeholder="Enter friend's username"
-              className="w-full px-4 py-2 bg-gray-800 border-2 border-gray-700 text-gray-200 rounded-lg font-press-start text-sm focus:outline-none focus:border-gray-600"
-            />
-          </div>
-          <div className="flex space-x-4">
-            <button
-              onClick={challengeFriend}
-              disabled={isSearching || !friendUsername}
-              className="flex-1 px-6 py-4 bg-gray-700 text-white rounded-lg font-press-start hover:bg-gray-600 transition-colors disabled:opacity-50 text-lg"
-            >
-              {isSearching ? 'Sending Challenge...' : 'Challenge Friend'}
-            </button>
-            <button
-              onClick={joinQueue}
-              disabled={isSearching}
-              className="flex-1 px-6 py-4 bg-gray-800 text-white rounded-lg font-press-start hover:bg-gray-700 transition-colors disabled:opacity-50 text-lg"
-            >
-              {isSearching ? 'Searching...' : 'Quick Match'}
-            </button>
-          </div>
-
-          {recentOpponents.length > 0 && (
-            <div className="mt-4">
-              <h3 className="text-gray-400 font-press-start text-sm mb-2">Recent Opponents:</h3>
-              <div className="space-y-2">
-                {recentOpponents.map((opponent) => (
-                  <button
-                    key={opponent.uid}
-                    onClick={() => challengeRecentOpponent(opponent)}
-                    className="w-full px-4 py-2 bg-gray-800 text-gray-300 rounded-lg font-press-start hover:bg-gray-700 transition-colors text-sm"
-                  >
-                    {opponent.username || 'Anonymous'} (Power: {opponent.power || 0})
-                  </button>
-                ))}
-              </div>
-            </div>
+        <div className="bg-neutral-800 p-2.5 rounded-md border border-neutral-700/60">
+          <h3 className="font-semibold text-neutral-200 mb-1">Current Match</h3>
+          {isInGame && currentOpponentDetails ? (
+            <p className="text-neutral-100">vs <span className="font-bold">{currentOpponentDetails.username || 'Opponent'}</span></p>
+          ) : isChallengeSent ? (
+            <p className="text-neutral-400 italic">Challenge sent...</p>
+          ) : (
+            <p className="text-neutral-500 italic">Not in a match.</p>
           )}
         </div>
-      )}
+      </div>
 
-      {isInQueue && (
-        <div className="space-y-4">
-          <div className="text-gray-300 text-center text-lg">
-            {isDirectChallenge ? 'Challenge in Progress!' : 'Searching for Opponent...'}
+      {/* Battle Log */}
+      <div className="h-32 sm:h-36 p-2 bg-neutral-800 rounded-md overflow-y-auto border border-neutral-700/60 space-y-1 text-xs font-mono"> {/* Kept font-mono */}
+        {battleLogs.length === 0 && <p className="text-neutral-500 italic">Awaiting actions...</p>}
+        {battleLogs.map((log, index) => (
+          <div key={index} className={`flex items-start ${
+              log.type === 'error' ? 'text-orange-400' : // Monotone-friendly error indication
+              log.type === 'success' ? 'text-green-400' : // Monotone-friendly success
+              log.type === 'action' ? 'text-sky-400' : // Monotone-friendly action
+              log.type === 'system' ? 'text-neutral-400 italic' : 'text-neutral-300'}`}>
+            <span className="mr-1.5 text-neutral-500">{log.timestamp.toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })}:</span>
+            <span className="flex-1 break-words">{log.message}</span>
           </div>
-          {!isDirectChallenge && (
-            <div className="space-y-2">
-              <div className="text-gray-400 text-center">
-                Queue Position: {queuePosition}
-              </div>
-              <div className="text-gray-400 text-center">
-                Estimated Time: {estimatedTime}s
-              </div>
-            </div>
-          )}
-          <div className="text-gray-400 text-center">
-            Time: {queueTime}s
-          </div>
-          <button
-            onClick={leaveQueue}
-            className="w-full px-6 py-4 bg-gray-900 border-2 border-gray-700 text-gray-300 rounded-lg font-press-start hover:bg-gray-800 transition-colors text-lg"
-          >
-            {isDirectChallenge ? 'Cancel Challenge' : 'Leave Queue'}
+        ))}
+      </div>
+
+      {/* Global Error Display (if any) */}
+      {error && (
+        <div className="border border-orange-500/50 bg-neutral-800 p-2.5 rounded-md text-center text-xs my-2">
+          <p className="text-orange-300 font-semibold">Alert: {error}</p>
+          <button onClick={handleResetPlayerState} disabled={isProcessing}
+            className="mt-1.5 px-3 py-1 bg-neutral-700 text-neutral-200 rounded hover:bg-neutral-600 text-xs disabled:opacity-50">
+            {isProcessing ? '...' : 'Reset My State'}
           </button>
         </div>
       )}
 
-      {/* Battle Log */}
-      <div className="mt-4 space-y-2">
-        <h3 className="text-gray-400 font-press-start text-sm">Status:</h3>
-        <div className="bg-gray-900 border border-gray-700 rounded-lg p-3 h-32 overflow-y-auto">
-          {battleLog.map((log, index) => (
-            <div key={index} className="text-gray-300 font-press-start text-xs">
-              {log}
-            </div>
-          ))}
-        </div>
+      {/* Sign Out Button */}
+      <div className="mt-4 pt-4 border-t border-neutral-700/50">
+        <button onClick={handleSignOut} disabled={isProcessing || !user}
+          className="w-full px-4 py-2 bg-red-700 text-neutral-100 rounded hover:bg-red-600 font-semibold disabled:opacity-50">
+          {isProcessing ? 'Processing...' : 'Sign Out'}
+        </button>
       </div>
+
+      {/* --- Action Buttons --- */}
+      <div className="space-y-2.5 text-sm">
+        {/* Idle State: Join Queue or Challenge */}
+        {canJoinQueue && (
+          <>
+            <button onClick={handleJoinQueue} disabled={isProcessing || !user}
+              className="w-full px-4 py-2 bg-neutral-700 text-neutral-100 rounded hover:bg-neutral-600 font-semibold disabled:opacity-50">
+              {isProcessing ? 'Processing...' : 'Join Random Queue'}
+            </button>
+            <div className="pt-2 border-t border-neutral-700/50">
+              <input type="text" value={friendUsernameInput} onChange={(e) => setFriendUsernameInput(e.target.value)}
+                placeholder="Friend's Username"
+                className="w-full p-1.5 mb-1.5 rounded bg-neutral-800 border border-neutral-600 text-neutral-200 focus:ring-1 focus:ring-neutral-500 placeholder:text-neutral-500"
+                disabled={isProcessing || !user} />
+              <button onClick={handleChallengeFriend} disabled={isProcessing || !friendUsernameInput.trim() || !user}
+                className="w-full px-4 py-2 bg-neutral-700 text-neutral-100 rounded hover:bg-neutral-600 font-semibold disabled:opacity-50">
+                {isProcessing ? 'Processing...' : 'Challenge Friend'}
+              </button>
+            </div>
+          </>
+        )}
+
+        {/* In Queue or Challenge Sent: Cancel Button */}
+        {(isInQueueSearching || isChallengeSent) && (
+          <button onClick={handleLeaveOrCancel} disabled={isProcessing || !user}
+            className="w-full px-4 py-2 bg-amber-700 text-neutral-100 rounded hover:bg-amber-600 font-semibold disabled:opacity-50">
+            {isProcessing ? 'Processing...' : (isChallengeSent ? 'Cancel Challenge Sent' : 'Cancel Queue Search')}
+          </button>
+        )}
+
+        {/* Incoming Challenge: Accept/Decline */}
+        {hasIncomingChallenge && playerData?.challengeFrom && (
+          <div className="p-2.5 bg-neutral-800 border border-neutral-700 rounded text-center">
+            <p className="mb-1.5 text-neutral-200">
+              Incoming challenge from: <span className="font-semibold">{playerData.challengeFrom /* Fetch username */}</span>!
+            </p>
+            <div className="flex space-x-2">
+              <button onClick={handleAcceptChallenge} disabled={isProcessing || !user}
+                className="flex-1 px-3 py-1.5 bg-green-600 text-white rounded hover:bg-green-500 font-semibold disabled:opacity-50">
+                {isProcessing ? '...' : 'Accept'}
+              </button>
+              <button onClick={handleDeclineChallenge} disabled={isProcessing || !user}
+                className="flex-1 px-3 py-1.5 bg-red-700 text-white rounded hover:bg-red-600 font-semibold disabled:opacity-50">
+                {isProcessing ? '...' : 'Decline'}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* In Game */}
+        {isInGame && (
+          <div className="p-3 bg-neutral-800 border-neutral-700 rounded text-center">
+            <p className="text-green-400 font-semibold">You are in a game!</p>
+            {/* You might add a "Report Score" or "Leave Game" (gracefully) button here */}
+          </div>
+        )}
+      </div>
+       {/* Fallback for no user data or not 'online' */}
+       {!playerData && user && <p className="text-xs text-neutral-500 text-center italic">Initializing player data...</p>}
+       {!user && <p className="text-xs text-neutral-500 text-center italic">Please log in to use the game hub.</p>}
+
     </div>
   );
-} 
+};
+
+export default QueueComponent;

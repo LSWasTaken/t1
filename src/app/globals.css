@@ -10,15 +10,17 @@
 
 @layer components {
   .cyber-button {
-    @apply px-4 py-2 bg-cyber-gray text-cyber-white rounded-lg font-press-start hover:bg-cyber-light-gray transition-colors;
+    @apply px-4 py-2 bg-cyber-gray text-cyber-white rounded-lg font-press-start 
+           hover:bg-cyber-hover transition-colors border border-cyber-accent;
   }
   
   .cyber-input {
-    @apply px-4 py-2 bg-cyber-gray border-2 border-cyber-light-gray text-cyber-white rounded-lg font-press-start focus:outline-none focus:border-cyber-blue;
+    @apply px-4 py-2 bg-cyber-gray border-2 border-cyber-accent text-cyber-white 
+           rounded-lg font-press-start focus:outline-none focus:border-cyber-hover;
   }
   
   .cyber-card {
-    @apply bg-cyber-gray border-2 border-cyber-light-gray rounded-lg p-4;
+    @apply bg-cyber-gray border-2 border-cyber-accent rounded-lg p-4;
   }
 }
 
@@ -69,20 +71,26 @@
   animation: rainbow 2s linear infinite;
 }
 
+@keyframes red-glow {
+  0%, 100% { box-shadow: 0 0 8px 2px #ff0000, 0 0 16px 4px #ff0000; }
+  50% { box-shadow: 0 0 24px 8px #ff3333, 0 0 32px 16px #ff3333; }
+}
+
+.red-glow {
+  animation: red-glow 1.2s infinite alternate;
+}
+
 :root {
   --foreground-rgb: 255, 255, 255;
-  --background-start-rgb: 10, 10, 10;
+  --background-start-rgb: 0, 0, 0;
   --background-end-rgb: 0, 0, 0;
   --cyber-black: #000000;
   --cyber-gray: #1a1a1a;
   --cyber-light-gray: #333333;
   --cyber-lighter-gray: #4a4a4a;
   --cyber-white: #ffffff;
-  --cyber-blue: #00ffff;
-  --cyber-pink: #ff00ff;
-  --cyber-yellow: #ffff00;
-  --cyber-green: #00ff00;
-  --cyber-red: #ff0000;
+  --cyber-accent: #666666;
+  --cyber-hover: #808080;
 }
 
 body {
@@ -98,15 +106,15 @@ body {
 .neon-text {
   text-shadow: 0 0 5px #fff,
                0 0 10px #fff,
-               0 0 20px #ff00ff,
-               0 0 30px #ff00ff,
-               0 0 40px #ff00ff;
+               0 0 20px #666,
+               0 0 30px #666,
+               0 0 40px #666;
 }
 
 .neon-border {
   box-shadow: 0 0 5px #fff,
               0 0 10px #fff,
-              0 0 20px #00ffff,
-              0 0 30px #00ffff,
-              0 0 40px #00ffff;
+              0 0 20px #666,
+              0 0 30px #666,
+              0 0 40px #666;
 } 

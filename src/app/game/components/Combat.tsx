@@ -78,14 +78,14 @@ export default function Combat({ opponent }: CombatProps) {
         <div className="text-center">
           <h2 className="text-2xl font-press-start mb-4">Waiting for opponent...</h2>
           <div className="animate-pulse">
-            <div className="w-16 h-16 border-4 border-cyber-blue border-t-transparent rounded-full mx-auto animate-spin"></div>
+            <div className="w-16 h-16 border-4 border-cyber-accent border-t-transparent rounded-full mx-auto animate-spin"></div>
           </div>
         </div>
       )}
 
       {gameState === 'countdown' && (
         <div className="text-center">
-          <h2 className="text-4xl font-press-start text-cyber-yellow">{countdown}</h2>
+          <h2 className="text-4xl font-press-start text-cyber-white">{countdown}</h2>
         </div>
       )}
 
@@ -93,11 +93,11 @@ export default function Combat({ opponent }: CombatProps) {
         <div className="space-y-4">
           <div className="flex justify-between items-center">
             <div className="text-center">
-              <h3 className="font-press-start text-cyber-blue">{user?.displayName || 'Player'}</h3>
+              <h3 className="font-press-start text-cyber-white">{user?.displayName || 'Player'}</h3>
               <p className="text-2xl">{playerScore}</p>
             </div>
             <div className="text-center">
-              <h3 className="font-press-start text-cyber-pink">{opponent?.username}</h3>
+              <h3 className="font-press-start text-cyber-white">{opponent?.username}</h3>
               <p className="text-2xl">{opponentScore}</p>
             </div>
           </div>
@@ -119,11 +119,11 @@ export default function Combat({ opponent }: CombatProps) {
           </h2>
           <div className="flex justify-center space-x-8">
             <div className="text-center">
-              <h3 className="font-press-start text-cyber-blue">{user?.displayName || 'Player'}</h3>
+              <h3 className="font-press-start text-cyber-white">{user?.displayName || 'Player'}</h3>
               <p className="text-2xl">{playerScore}</p>
             </div>
             <div className="text-center">
-              <h3 className="font-press-start text-cyber-pink">{opponent?.username}</h3>
+              <h3 className="font-press-start text-cyber-white">{opponent?.username}</h3>
               <p className="text-2xl">{opponentScore}</p>
             </div>
           </div>
@@ -137,7 +137,7 @@ export default function Combat({ opponent }: CombatProps) {
       )}
 
       {error && (
-        <div className="text-center text-cyber-red">
+        <div className="text-center text-cyber-accent">
           <p>{error}</p>
         </div>
       )}
