@@ -10,58 +10,57 @@ interface PowerUp {
   name: string;
   description: string;
   cost: number;
-  multiplier: number;
-  owned: number;
+  owned: boolean;
 }
 
 interface PowerUpsProps {
   power: number;
-  onPurchase: (cost: number) => void;
+  powerUps: {
+    doubleClick: boolean;
+    autoClick: boolean;
+    megaClick: boolean;
+  };
+  onPurchase: (type: string, cost: number) => void;
 }
 
-export default function PowerUps({ power, onPurchase }: PowerUpsProps) {
+export default function PowerUps({ power, powerUps, onPurchase }: PowerUpsProps) {
   const { user } = useAuth();
-  const [powerUps, setPowerUps] = useState<PowerUp[]>([
+  const powerUpOptions = [
     {
-      id: 'click-boost',
-      name: 'Click Boost',
-      description: 'Doubles your click power',
+      id: 'doubleClick',
+      name: 'Double Click',
+      description: 'Double your click power',
       cost: 100,
-      multiplier: 2,
-      owned: 0,
+      owned: powerUps.doubleClick,
     },
     {
-      id: 'auto-clicker',
-      name: 'Auto Clicker',
-      description: 'Automatically clicks every second',
+      id: 'autoClick',
+      name: 'Auto Click',
+      description: 'Gain 1 power per second',
       cost: 500,
-      multiplier: 1,
-      owned: 0,
+      owned: powerUps.autoClick,
     },
     {
-      id: 'power-multiplier',
-      name: 'Power Multiplier',
-      description: 'Doubles all power gains',
+      id: 'megaClick',
+      name: 'Mega Click',
+      description: 'Multiply click power by 5',
       cost: 1000,
-      multiplier: 2,
-      owned: 0,
+      owned: powerUps.megaClick,
     },
-  ]);
+  ];
 
   const handlePurchase = async (powerUp: PowerUp) => {
     if (power < powerUp.cost) return;
 
-    const newPowerUps = powerUps.map((p) =>
-      p.id === powerUp.id ? { ...p, owned: p.owned + 1 } : p
-    );
-    setPowerUps(newPowerUps);
-    onPurchase(powerUp.cost);
+    onPurchase(powerUp.id, powerUp.cost);
 
     if (user) {
       try {
         const playerRef = doc(db, 'players', user.uid);
         await updateDoc(playerRef, {
-          powerUps: newPowerUps,
+          powerUps: {
+            [powerUp.id]: !powerUp.owned,
+          },
         });
       } catch (error) {
         console.error('Error updating power-ups:', error);
@@ -70,41 +69,40 @@ export default function PowerUps({ power, onPurchase }: PowerUpsProps) {
   };
 
   return (
-    <div className="space-y-4">
-      <h3 className="text-xl font-press-start text-cyber-pink mb-4">
+    <div className="bg-cyber-dark rounded-lg p-6">
+      <h3 className="text-2xl font-press-start text-cyber-pink mb-6 text-center">
         Power-Ups
       </h3>
-      <div className="grid grid-cols-1 gap-4">
-        {powerUps.map((powerUp) => (
+      <div className="space-y-4">
+        {powerUpOptions.map((powerUp) => (
           <div
             key={powerUp.id}
-            className="bg-cyber-black rounded-lg p-4 border border-cyber-pink hover:border-cyber-purple transition-colors"
+            className="bg-cyber-black rounded-lg p-4"
           >
-            <div className="flex justify-between items-start mb-2">
-              <div>
-                <h4 className="font-press-start text-cyber-blue">
-                  {powerUp.name}
-                </h4>
-                <p className="text-sm text-cyber-green">
-                  {powerUp.description}
-                </p>
-              </div>
-              <span className="text-cyber-pink font-press-start">
-                x{powerUp.owned}
+            <div className="flex justify-between items-center mb-2">
+              <h4 className="text-cyber-blue font-press-start">
+                {powerUp.name}
+              </h4>
+              <span className="text-cyber-green">
+                {powerUp.cost} power
               </span>
             </div>
-            <div className="flex justify-between items-center">
-              <span className="text-cyber-blue">
-                Cost: {powerUp.cost} power
-              </span>
-              <button
-                onClick={() => handlePurchase(powerUp)}
-                disabled={power < powerUp.cost}
-                className="px-4 py-2 bg-cyber-pink text-white rounded-lg font-press-start hover:bg-cyber-purple transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                Purchase
-              </button>
-            </div>
+            <p className="text-cyber-purple text-sm mb-3">
+              {powerUp.description}
+            </p>
+            <button
+              onClick={() => handlePurchase(powerUp)}
+              disabled={power < powerUp.cost || powerUp.owned}
+              className={`w-full py-2 rounded-lg font-press-start transition-colors ${
+                powerUp.owned
+                  ? 'bg-cyber-green text-white cursor-not-allowed'
+                  : power >= powerUp.cost
+                  ? 'bg-cyber-pink text-white hover:bg-cyber-purple'
+                  : 'bg-gray-600 text-gray-400 cursor-not-allowed'
+              }`}
+            >
+              {powerUp.owned ? 'Owned' : 'Purchase'}
+            </button>
           </div>
         ))}
       </div>

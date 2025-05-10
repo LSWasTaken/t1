@@ -4,15 +4,8 @@ import { useState, useEffect } from 'react';
 import { db } from '@/lib/firebase';
 import { collection, query, orderBy, limit, onSnapshot } from 'firebase/firestore';
 
-interface Player {
-  id: string;
-  email: string;
-  power: number;
-  clicks: number;
-}
-
 export default function Leaderboard() {
-  const [players, setPlayers] = useState<Player[]>([]);
+  const [players, setPlayers] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
@@ -23,16 +16,11 @@ export default function Leaderboard() {
     );
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
-      const playerData: Player[] = [];
-      snapshot.forEach((doc) => {
-        const data = doc.data();
-        playerData.push({
-          id: doc.id,
-          email: data.email || 'Anonymous',
-          power: data.power || 0,
-          clicks: data.clicks || 0,
-        });
-      });
+      const playerData = snapshot.docs.map((doc, index) => ({
+        id: doc.id,
+        rank: index + 1,
+        ...doc.data(),
+      }));
       setPlayers(playerData);
       setIsLoading(false);
     });
@@ -42,36 +30,36 @@ export default function Leaderboard() {
 
   if (isLoading) {
     return (
-      <div className="text-center">
-        <p className="text-cyber-blue">Loading leaderboard...</p>
+      <div className="bg-cyber-dark rounded-lg p-4">
+        <h2 className="text-xl font-press-start text-cyber-pink mb-4">Loading Leaderboard...</h2>
       </div>
     );
   }
 
   return (
-    <div className="bg-cyber-dark rounded-lg p-6">
-      <h3 className="text-2xl font-press-start text-cyber-pink mb-6 text-center">
-        Leaderboard
-      </h3>
-      <div className="space-y-4">
-        {players.map((player, index) => (
+    <div className="bg-cyber-dark rounded-lg p-4">
+      <h2 className="text-xl font-press-start text-cyber-pink mb-4">Top Fighters</h2>
+      <div className="space-y-2">
+        {players.map((player) => (
           <div
             key={player.id}
-            className="flex items-center justify-between p-4 bg-cyber-black rounded-lg"
+            className="flex items-center justify-between bg-cyber-black p-3 rounded-lg"
           >
-            <div className="flex items-center space-x-4">
-              <span className="text-cyber-pink font-press-start">
-                #{index + 1}
+            <div className="flex items-center space-x-3">
+              <span className="text-cyber-pink font-press-start w-8">
+                #{player.rank}
               </span>
-              <span className="text-cyber-blue">{player.email}</span>
+              <span className="text-cyber-blue">
+                {player.username || player.email?.split('@')[0] || 'Anonymous'}
+              </span>
             </div>
-            <div className="text-right">
-              <p className="text-cyber-green font-press-start">
+            <div className="flex items-center space-x-4">
+              <span className="text-cyber-green">
                 Power: {player.power}
-              </p>
-              <p className="text-cyber-blue text-sm">
-                Clicks: {player.clicks}
-              </p>
+              </span>
+              <span className="text-cyber-purple">
+                Wins: {player.wins || 0}
+              </span>
             </div>
           </div>
         ))}

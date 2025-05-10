@@ -3,117 +3,183 @@
 import { useState, useEffect } from 'react';
 import { useAuth } from '@/lib/auth';
 import { db } from '@/lib/firebase';
-import { collection, query, where, getDocs, doc, updateDoc } from 'firebase/firestore';
+import { collection, query, where, getDocs, doc, updateDoc, increment } from 'firebase/firestore';
 
-interface Player {
-  id: string;
-  email: string;
-  power: number;
-}
-
-interface CombatProps {
-  playerPower: number;
-  onWin: (powerGain: number) => void;
-}
-
-export default function Combat({ playerPower, onWin }: CombatProps) {
+export default function Combat({ playerPower }: { playerPower: number }) {
   const { user } = useAuth();
-  const [opponent, setOpponent] = useState<Player | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
+  const [opponent, setOpponent] = useState<any>(null);
+  const [isSearching, setIsSearching] = useState(false);
   const [battleLog, setBattleLog] = useState<string[]>([]);
+  const [isInCombat, setIsInCombat] = useState(false);
 
   const findOpponent = async () => {
     if (!user) return;
-    setIsLoading(true);
+    setIsSearching(true);
+    setBattleLog([]);
 
     try {
-      // Find players with similar power level (±20%)
-      const minPower = playerPower * 0.8;
-      const maxPower = playerPower * 1.2;
+      // First try to find players with similar power (±30% range)
+      const powerRange = playerPower * 0.3;
+      const minPower = Math.max(1, playerPower - powerRange);
+      const maxPower = playerPower + powerRange;
 
       const q = query(
         collection(db, 'players'),
         where('power', '>=', minPower),
-        where('power', '<=', maxPower)
+        where('power', '<=', maxPower),
+        where('uid', '!=', user.uid)
       );
 
-      const snapshot = await getDocs(q);
-      const players = snapshot.docs
-        .map(doc => ({ id: doc.id, ...doc.data() } as Player))
-        .filter(p => p.id !== user.uid);
+      const querySnapshot = await getDocs(q);
+      const potentialOpponents = querySnapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      }));
 
-      if (players.length > 0) {
-        const randomOpponent = players[Math.floor(Math.random() * players.length)];
-        setOpponent(randomOpponent);
-        setBattleLog([]);
+      if (potentialOpponents.length > 0) {
+        // Randomly select an opponent
+        const randomIndex = Math.floor(Math.random() * potentialOpponents.length);
+        setOpponent(potentialOpponents[randomIndex]);
+        setBattleLog(prev => [...prev, `Found opponent: ${potentialOpponents[randomIndex].username || 'Anonymous'}`]);
+      } else {
+        // If no opponents in range, find any opponent
+        const allPlayersQuery = query(
+          collection(db, 'players'),
+          where('uid', '!=', user.uid)
+        );
+        const allPlayersSnapshot = await getDocs(allPlayersQuery);
+        const allPlayers = allPlayersSnapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data()
+        }));
+
+        if (allPlayers.length > 0) {
+          const randomIndex = Math.floor(Math.random() * allPlayers.length);
+          setOpponent(allPlayers[randomIndex]);
+          setBattleLog(prev => [...prev, `Found opponent: ${allPlayers[randomIndex].username || 'Anonymous'}`]);
+        } else {
+          setBattleLog(prev => [...prev, 'No opponents found. Try again later!']);
+        }
       }
     } catch (error) {
       console.error('Error finding opponent:', error);
+      setBattleLog(prev => [...prev, 'Error finding opponent. Try again!']);
     } finally {
-      setIsLoading(false);
+      setIsSearching(false);
     }
   };
 
-  const handleAttack = () => {
-    if (!opponent) return;
+  const attack = async () => {
+    if (!user || !opponent) return;
+    setIsInCombat(true);
 
-    const playerRoll = Math.random() * playerPower;
-    const opponentRoll = Math.random() * opponent.power;
+    try {
+      // Calculate attack and defense rolls
+      const attackRoll = Math.floor(Math.random() * playerPower) + 1;
+      const defenseRoll = Math.floor(Math.random() * opponent.power) + 1;
 
-    const newLog = [...battleLog];
-    newLog.push(`You attack with ${Math.floor(playerRoll)} power!`);
-    newLog.push(`Opponent defends with ${Math.floor(opponentRoll)} power!`);
+      setBattleLog(prev => [
+        ...prev,
+        `You attack with power: ${attackRoll}`,
+        `Opponent defends with power: ${defenseRoll}`
+      ]);
 
-    if (playerRoll > opponentRoll) {
-      const powerGain = Math.floor(opponent.power * 0.1);
-      newLog.push(`Victory! You gained ${powerGain} power!`);
-      onWin(powerGain);
-      setOpponent(null);
-    } else {
-      newLog.push('Defeat! Try again!');
+      if (attackRoll > defenseRoll) {
+        // Calculate power gain (10% of opponent's power)
+        const powerGain = Math.floor(opponent.power * 0.1);
+        
+        // Update player's power and wins
+        const playerRef = doc(db, 'players', user.uid);
+        await updateDoc(playerRef, {
+          power: increment(powerGain),
+          wins: increment(1)
+        });
+
+        // Update opponent's losses
+        const opponentRef = doc(db, 'players', opponent.id);
+        await updateDoc(opponentRef, {
+          losses: increment(1)
+        });
+
+        setBattleLog(prev => [
+          ...prev,
+          `Victory! You gained ${powerGain} power!`
+        ]);
+      } else {
+        // Update player's losses
+        const playerRef = doc(db, 'players', user.uid);
+        await updateDoc(playerRef, {
+          losses: increment(1)
+        });
+
+        // Update opponent's wins
+        const opponentRef = doc(db, 'players', opponent.id);
+        await updateDoc(opponentRef, {
+          wins: increment(1)
+        });
+
+        setBattleLog(prev => [
+          ...prev,
+          'Defeat! Try again or find a new opponent.'
+        ]);
+      }
+    } catch (error) {
+      console.error('Error in combat:', error);
+      setBattleLog(prev => [...prev, 'Error in combat. Try again!']);
+    } finally {
+      setIsInCombat(false);
     }
-
-    setBattleLog(newLog);
   };
 
   return (
-    <div className="space-y-4">
-      <h3 className="text-xl font-press-start text-cyber-pink mb-4">
+    <div className="bg-cyber-dark rounded-lg p-6">
+      <h3 className="text-2xl font-press-start text-cyber-pink mb-6 text-center">
         Combat Arena
       </h3>
 
       {!opponent ? (
         <button
           onClick={findOpponent}
-          disabled={isLoading}
-          className="w-full py-3 bg-cyber-pink text-white rounded-lg font-press-start hover:bg-cyber-purple transition-colors disabled:opacity-50"
+          disabled={isSearching}
+          className="w-full px-6 py-3 bg-cyber-pink text-white rounded-lg font-press-start hover:bg-cyber-purple transition-colors disabled:opacity-50"
         >
-          {isLoading ? 'Finding Opponent...' : 'Find Opponent'}
+          {isSearching ? 'Searching...' : 'Find Opponent'}
         </button>
       ) : (
         <div className="space-y-4">
-          <div className="bg-cyber-black rounded-lg p-4 border border-cyber-pink">
-            <h4 className="font-press-start text-cyber-blue mb-2">
-              Opponent: {opponent.email}
+          <div className="bg-cyber-black rounded-lg p-4">
+            <h4 className="text-cyber-blue font-press-start mb-2">
+              Opponent: {opponent.username || opponent.email?.split('@')[0] || 'Anonymous'}
             </h4>
-            <p className="text-cyber-green">
-              Power: {opponent.power}
-            </p>
+            <p className="text-cyber-green">Power: {opponent.power}</p>
+            <p className="text-cyber-purple">Wins: {opponent.wins || 0}</p>
           </div>
 
-          <button
-            onClick={handleAttack}
-            className="w-full py-3 bg-cyber-pink text-white rounded-lg font-press-start hover:bg-cyber-purple transition-colors"
-          >
-            Attack!
-          </button>
+          <div className="flex space-x-4">
+            <button
+              onClick={attack}
+              disabled={isInCombat}
+              className="flex-1 px-6 py-3 bg-cyber-pink text-white rounded-lg font-press-start hover:bg-cyber-purple transition-colors disabled:opacity-50"
+            >
+              {isInCombat ? 'Fighting...' : 'Attack!'}
+            </button>
+            <button
+              onClick={findOpponent}
+              disabled={isSearching}
+              className="flex-1 px-6 py-3 bg-cyber-blue text-white rounded-lg font-press-start hover:bg-cyber-purple transition-colors disabled:opacity-50"
+            >
+              New Opponent
+            </button>
+          </div>
+        </div>
+      )}
 
-          <div className="bg-cyber-black rounded-lg p-4 border border-cyber-pink max-h-48 overflow-y-auto">
-            <h4 className="font-press-start text-cyber-blue mb-2">
-              Battle Log
-            </h4>
+      {battleLog.length > 0 && (
+        <div className="mt-6 bg-cyber-black rounded-lg p-4">
+          <h4 className="text-cyber-pink font-press-start mb-2">Battle Log</h4>
+          <div className="space-y-1 max-h-40 overflow-y-auto">
             {battleLog.map((log, index) => (
-              <p key={index} className="text-cyber-green text-sm mb-1">
+              <p key={index} className="text-cyber-blue text-sm">
                 {log}
               </p>
             ))}
