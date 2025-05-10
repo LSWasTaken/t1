@@ -115,14 +115,48 @@ export default function Combat() {
     if (!user) return;
     try {
       const playerRef = doc(db, 'players', user.uid);
-      await updateDoc(playerRef, {
-        inQueue: false
-      });
+      
+      if (opponent) {
+        // If in a match, handle surrender
+        const opponentRef = doc(db, 'players', opponent.id);
+        await updateDoc(playerRef, {
+          losses: increment(1),
+          inQueue: false,
+          lastMatch: serverTimestamp(),
+          winStreak: 0 // Reset win streak on surrender
+        });
+
+        await updateDoc(opponentRef, {
+          wins: increment(1),
+          inQueue: false,
+          lastMatch: serverTimestamp()
+        });
+
+        // Record the match
+        await addDoc(collection(db, 'matches'), {
+          player1Id: user.uid,
+          player2Id: opponent.id,
+          player1Power: playerPower,
+          player2Power: opponent.power,
+          winner: opponent.id,
+          powerGained: 0,
+          timestamp: serverTimestamp()
+        } as MatchData);
+
+        setBattleLog(['You surrendered the match!']);
+      } else {
+        // Just leave queue if not in a match
+        await updateDoc(playerRef, {
+          inQueue: false
+        });
+      }
+
       setInQueue(false);
       setOpponent(null);
-      setBattleLog([]);
+      resetHealth();
     } catch (error) {
       console.error('Error leaving queue:', error);
+      setBattleLog(['Error leaving queue. Try again!']);
     }
   };
 
@@ -274,42 +308,51 @@ export default function Combat() {
   }
 
   return (
-    <div className="space-y-4">
-      <div className="flex flex-col sm:flex-row justify-between items-center gap-2">
-        <div className="text-cyber-blue text-center sm:text-left">
+    <div className="space-y-4 max-w-2xl mx-auto px-4 py-4">
+      {/* Power Display */}
+      <div className="flex flex-col sm:flex-row justify-between items-center gap-2 bg-cyber-black rounded-lg p-3">
+        <div className="text-cyber-blue text-center sm:text-left w-full sm:w-auto text-lg">
           Your Power: {playerPower}
         </div>
         {opponent && (
-          <div className="text-cyber-pink text-center sm:text-right">
+          <div className="text-cyber-pink text-center sm:text-right w-full sm:w-auto text-lg">
             Opponent Power: {opponent.power}
           </div>
         )}
       </div>
 
+      {/* Main Combat Area */}
       <div className="bg-cyber-black rounded-lg p-4">
         <div className="space-y-4">
           {!opponent ? (
-            <button
-              onClick={inQueue ? leaveQueue : joinQueue}
-              disabled={isSearching}
-              className="w-full px-6 py-3 bg-cyber-pink text-white rounded-lg font-press-start hover:bg-cyber-purple transition-colors disabled:opacity-50"
-            >
-              {isSearching ? 'Searching...' : inQueue ? 'Leave Queue' : 'Join Queue'}
-            </button>
+            <div className="space-y-4">
+              <button
+                onClick={inQueue ? leaveQueue : joinQueue}
+                disabled={isSearching}
+                className="w-full px-6 py-4 bg-cyber-pink text-white rounded-lg font-press-start hover:bg-cyber-purple transition-colors disabled:opacity-50 text-lg"
+              >
+                {isSearching ? 'Searching...' : inQueue ? 'Leave Queue' : 'Join Queue'}
+              </button>
+              {inQueue && (
+                <div className="text-cyber-yellow text-center animate-pulse text-lg">
+                  Waiting for opponent...
+                </div>
+              )}
+            </div>
           ) : (
             <div className="space-y-4">
-              <div className="text-cyber-yellow text-center">
+              <div className="text-cyber-yellow text-center text-lg font-bold">
                 Fighting against: {opponent.username || opponent.email?.split('@')[0] || 'Anonymous'}
               </div>
               
               {/* Health Bars */}
-              <div className="space-y-2">
+              <div className="space-y-3">
                 <div>
                   <div className="flex justify-between text-sm mb-1">
-                    <span className="text-cyber-blue">Your Health</span>
-                    <span className="text-cyber-blue">{playerHealth}/{MAX_HEALTH}</span>
+                    <span className="text-cyber-blue font-bold">Your Health</span>
+                    <span className="text-cyber-blue font-bold">{playerHealth}/{MAX_HEALTH}</span>
                   </div>
-                  <div className="h-4 bg-cyber-black border-2 border-cyber-blue rounded-full overflow-hidden">
+                  <div className="h-5 bg-cyber-black border-2 border-cyber-blue rounded-full overflow-hidden">
                     <div 
                       className="h-full bg-cyber-blue transition-all duration-300"
                       style={{ width: `${(playerHealth / MAX_HEALTH) * 100}%` }}
@@ -318,10 +361,10 @@ export default function Combat() {
                 </div>
                 <div>
                   <div className="flex justify-between text-sm mb-1">
-                    <span className="text-cyber-pink">Opponent Health</span>
-                    <span className="text-cyber-pink">{opponentHealth}/{MAX_HEALTH}</span>
+                    <span className="text-cyber-pink font-bold">Opponent Health</span>
+                    <span className="text-cyber-pink font-bold">{opponentHealth}/{MAX_HEALTH}</span>
                   </div>
-                  <div className="h-4 bg-cyber-black border-2 border-cyber-pink rounded-full overflow-hidden">
+                  <div className="h-5 bg-cyber-black border-2 border-cyber-pink rounded-full overflow-hidden">
                     <div 
                       className="h-full bg-cyber-pink transition-all duration-300"
                       style={{ width: `${(opponentHealth / MAX_HEALTH) * 100}%` }}
@@ -330,19 +373,20 @@ export default function Combat() {
                 </div>
               </div>
 
-              <div className="flex flex-col sm:flex-row gap-2">
+              {/* Action Buttons */}
+              <div className="flex flex-col sm:flex-row gap-3">
                 <button
                   onClick={attack}
                   disabled={isInCombat}
-                  className="flex-1 px-6 py-3 bg-cyber-pink text-white rounded-lg font-press-start hover:bg-cyber-purple transition-colors disabled:opacity-50"
+                  className="flex-1 px-6 py-4 bg-cyber-pink text-white rounded-lg font-press-start hover:bg-cyber-purple transition-colors disabled:opacity-50 text-lg"
                 >
                   {isInCombat ? 'Fighting...' : 'Attack!'}
                 </button>
                 <button
                   onClick={leaveQueue}
-                  className="px-6 py-3 bg-cyber-black border-2 border-cyber-pink text-cyber-pink rounded-lg font-press-start hover:bg-cyber-purple transition-colors"
+                  className="w-full sm:w-auto px-6 py-4 bg-cyber-black border-2 border-cyber-pink text-cyber-pink rounded-lg font-press-start hover:bg-cyber-purple transition-colors text-lg"
                 >
-                  Leave Battle
+                  Surrender
                 </button>
               </div>
             </div>
@@ -350,12 +394,13 @@ export default function Combat() {
         </div>
       </div>
 
+      {/* Battle Log */}
       {battleLog.length > 0 && (
         <div className="bg-cyber-black rounded-lg p-4">
-          <h3 className="text-cyber-pink mb-2">Battle Log:</h3>
-          <div className="space-y-1">
+          <h3 className="text-cyber-pink mb-3 text-center sm:text-left text-lg font-bold">Battle Log:</h3>
+          <div className="space-y-2 max-h-48 overflow-y-auto px-2">
             {battleLog.map((log, index) => (
-              <div key={index} className="text-cyber-blue text-center sm:text-left">
+              <div key={index} className="text-cyber-blue text-center sm:text-left text-base">
                 {log}
               </div>
             ))}
