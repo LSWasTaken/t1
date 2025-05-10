@@ -3,12 +3,22 @@
 @tailwind utilities;
 
 @layer base {
-  :root {
-    --cyber-black: #0a0a0a;
-    --cyber-pink: #ff00ff;
-    --cyber-blue: #00ffff;
-    --cyber-purple: #800080;
-    --cyber-yellow: #ffff00;
+  body {
+    @apply bg-cyber-black text-cyber-white;
+  }
+}
+
+@layer components {
+  .cyber-button {
+    @apply px-4 py-2 bg-cyber-gray text-cyber-white rounded-lg font-press-start hover:bg-cyber-light-gray transition-colors;
+  }
+  
+  .cyber-input {
+    @apply px-4 py-2 bg-cyber-gray border-2 border-cyber-light-gray text-cyber-white rounded-lg font-press-start focus:outline-none focus:border-cyber-blue;
+  }
+  
+  .cyber-card {
+    @apply bg-cyber-gray border-2 border-cyber-light-gray rounded-lg p-4;
   }
 }
 
@@ -63,6 +73,16 @@
   --foreground-rgb: 255, 255, 255;
   --background-start-rgb: 10, 10, 10;
   --background-end-rgb: 0, 0, 0;
+  --cyber-black: #000000;
+  --cyber-gray: #1a1a1a;
+  --cyber-light-gray: #333333;
+  --cyber-lighter-gray: #4a4a4a;
+  --cyber-white: #ffffff;
+  --cyber-blue: #00ffff;
+  --cyber-pink: #ff00ff;
+  --cyber-yellow: #ffff00;
+  --cyber-green: #00ff00;
+  --cyber-red: #ff0000;
 }
 
 body {

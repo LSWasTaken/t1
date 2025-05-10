@@ -2,130 +2,100 @@
 
 import { useState } from 'react';
 import { useAuth } from '@/lib/auth';
-import Combat from './components/Combat';
-import ClickerGame from './components/ClickerGame';
-import TanzaMode from './components/TanzaMode';
-import JuluganMode from './components/JuluganMode';
-import Leaderboard from './components/Leaderboard';
-import Queue from './components/Queue';
+import ClickerGame from '@/app/game/components/ClickerGame';
+import Combat from '@/app/game/components/Combat';
+import Queue from '@/app/game/components/Queue';
+import Leaderboard from '@/app/game/components/Leaderboard';
+import Profile from '@/app/game/components/Profile';
+import MatchHistory from '@/app/game/components/MatchHistory';
+import JuluganMode from '@/app/game/components/JuluganMode';
+import TanzaMode from '@/app/game/components/TanzaMode';
+import FlappyBird from '@/app/game/components/FlappyBird';
 
-export default function GamePage() {
+export default function Game() {
   const { user } = useAuth();
-  const [activeMode, setActiveMode] = useState<'combat' | 'flappy' | 'tanza' | 'julugan' | 'leaderboard'>('combat');
+  const [activeTab, setActiveTab] = useState('clicker');
   const [opponent, setOpponent] = useState<any>(null);
 
-  const handleMatchFound = (opponent: any) => {
-    setOpponent(opponent);
+  const handleGameOver = (score: number) => {
+    // Handle game over logic
+    console.log('Game over with score:', score);
   };
 
-  const handleQueueUpdate = (isInQueue: boolean) => {
-    // Handle queue status updates if needed
+  const tabs = [
+    { id: 'clicker', label: 'Clicker' },
+    { id: 'combat', label: 'Combat' },
+    { id: 'julugan', label: 'Julugan' },
+    { id: 'tanza', label: 'Tanza' },
+    { id: 'flappy', label: 'Flappy' },
+    { id: 'leaderboard', label: 'Leaderboard' },
+    { id: 'profile', label: 'Profile' },
+    { id: 'history', label: 'History' },
+  ];
+
+  const getTabClasses = (tabId: string) => {
+    const baseClasses = 'px-4 py-2 rounded-lg font-press-start transition-colors';
+    return activeTab === tabId
+      ? `${baseClasses} bg-cyber-gray text-cyber-white`
+      : `${baseClasses} bg-cyber-black text-cyber-light-gray hover:bg-cyber-gray hover:text-cyber-white`;
   };
 
   if (!user) {
     return (
-      <div className="min-h-screen bg-cyber-black text-white p-4">
-        <div className="flex flex-col items-center justify-center min-h-screen">
-          <h1 className="text-4xl font-press-start text-cyber-pink mb-8">
-            Please log in to play the game.
-          </h1>
+      <div className="min-h-screen bg-cyber-black text-cyber-white p-4">
+        <div className="max-w-7xl mx-auto">
+          <div className="text-center">
+            <h1 className="text-2xl font-press-start">Please log in to play</h1>
+          </div>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-cyber-black text-white p-4">
-      <div className="max-w-7xl mx-auto space-y-8">
-        {/* Game Title */}
-        <div className="text-center">
-          <h1 className="text-4xl font-press-start text-cyber-pink mb-4">
-            Cyberpunk Game Hub
-          </h1>
-          <p className="text-cyber-blue font-press-start">
-            Welcome, {user.displayName || 'Cyber Warrior'}!
-          </p>
-        </div>
-
-        {/* Mode Selection */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          <button
-            onClick={() => setActiveMode('combat')}
-            className={`p-6 rounded-lg font-press-start text-xl transition-all transform hover:scale-105 ${
-              activeMode === 'combat'
-                ? 'bg-cyber-pink text-white'
-                : 'bg-cyber-purple text-cyber-pink hover:bg-cyber-pink hover:text-white'
-            }`}
-          >
-            Combat Arena
-          </button>
-          <button
-            onClick={() => setActiveMode('flappy')}
-            className={`p-6 rounded-lg font-press-start text-xl transition-all transform hover:scale-105 ${
-              activeMode === 'flappy'
-                ? 'bg-cyber-pink text-white'
-                : 'bg-cyber-purple text-cyber-pink hover:bg-cyber-pink hover:text-white'
-            }`}
-          >
-            Flappy Bird
-          </button>
-          <button
-            onClick={() => setActiveMode('tanza')}
-            className={`p-6 rounded-lg font-press-start text-xl transition-all transform hover:scale-105 ${
-              activeMode === 'tanza'
-                ? 'bg-cyber-pink text-white'
-                : 'bg-cyber-purple text-cyber-pink hover:bg-cyber-pink hover:text-white'
-            }`}
-          >
-            Tanza
-          </button>
-          <button
-            onClick={() => setActiveMode('julugan')}
-            className={`p-6 rounded-lg font-press-start text-xl transition-all transform hover:scale-105 ${
-              activeMode === 'julugan'
-                ? 'bg-cyber-pink text-white'
-                : 'bg-cyber-purple text-cyber-pink hover:bg-cyber-pink hover:text-white'
-            }`}
-          >
-            Julugan
-          </button>
-          <button
-            onClick={() => setActiveMode('leaderboard')}
-            className={`p-6 rounded-lg font-press-start text-xl transition-all transform hover:scale-105 ${
-              activeMode === 'leaderboard'
-                ? 'bg-cyber-pink text-white'
-                : 'bg-cyber-purple text-cyber-pink hover:bg-cyber-pink hover:text-white'
-            }`}
-          >
-            Leaderboard
-          </button>
-        </div>
-
-        {/* Game Content */}
-        <div className="bg-cyber-black rounded-lg p-6">
-          {activeMode === 'combat' && (
-            <div className="flex flex-col lg:flex-row gap-6">
-              <div className="flex-1">
-                <Combat />
-              </div>
-              <div className="w-full lg:w-80">
-                <Queue onMatchFound={handleMatchFound} onQueueUpdate={handleQueueUpdate} />
+    <div className="min-h-screen bg-cyber-black text-cyber-white p-4">
+      <div className="max-w-7xl mx-auto">
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          {/* Left Sidebar */}
+          <div className="md:col-span-1 space-y-4">
+            <div className="bg-cyber-gray rounded-lg p-4">
+              <h2 className="text-xl font-press-start mb-4">Game Modes</h2>
+              <div className="space-y-2">
+                {tabs.map((tab) => (
+                  <button
+                    key={tab.id}
+                    onClick={() => setActiveTab(tab.id)}
+                    className={getTabClasses(tab.id)}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
               </div>
             </div>
-          )}
-          {activeMode === 'flappy' && (
-            <div className="flex flex-col lg:flex-row gap-6">
-              <div className="flex-1">
-                <ClickerGame />
-              </div>
-              <div className="w-full lg:w-80">
-                <Queue onMatchFound={handleMatchFound} onQueueUpdate={handleQueueUpdate} />
-              </div>
+          </div>
+
+          {/* Main Content */}
+          <div className="md:col-span-3">
+            <div className="bg-cyber-gray rounded-lg p-4">
+              {activeTab === 'clicker' && <ClickerGame />}
+              {activeTab === 'combat' && (
+                <div className="flex flex-col lg:flex-row gap-6">
+                  <div className="flex-1">
+                    <Combat />
+                  </div>
+                  <div className="w-full lg:w-80">
+                    <Queue onMatchFound={setOpponent} onQueueUpdate={() => {}} />
+                  </div>
+                </div>
+              )}
+              {activeTab === 'julugan' && <JuluganMode />}
+              {activeTab === 'tanza' && <TanzaMode />}
+              {activeTab === 'flappy' && <FlappyBird onGameOver={handleGameOver} />}
+              {activeTab === 'leaderboard' && <Leaderboard />}
+              {activeTab === 'profile' && <Profile />}
+              {activeTab === 'history' && <MatchHistory />}
             </div>
-          )}
-          {activeMode === 'tanza' && <TanzaMode />}
-          {activeMode === 'julugan' && <JuluganMode />}
-          {activeMode === 'leaderboard' && <Leaderboard />}
+          </div>
         </div>
       </div>
     </div>
