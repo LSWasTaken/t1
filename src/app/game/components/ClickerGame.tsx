@@ -4,6 +4,8 @@ import { useState, useEffect } from 'react';
 import { useAuth } from '@/lib/auth';
 import { db } from '@/lib/firebase';
 import { doc, updateDoc, getDoc, setDoc } from 'firebase/firestore';
+import PowerUps from './PowerUps';
+import Combat from './Combat';
 
 interface PlayerStats {
   power: number;
@@ -11,6 +13,7 @@ interface PlayerStats {
   lastClick: number;
   clickPower: number;
   email?: string;
+  powerUps?: any[];
 }
 
 export default function ClickerGame() {
@@ -22,6 +25,7 @@ export default function ClickerGame() {
     clickPower: 1,
   });
   const [isLoading, setIsLoading] = useState(true);
+  const [clickEffect, setClickEffect] = useState(false);
 
   useEffect(() => {
     if (user) {
@@ -46,6 +50,7 @@ export default function ClickerGame() {
           lastClick: Date.now(),
           clickPower: 1,
           email: user.email || undefined,
+          powerUps: [],
         };
         await setDoc(playerRef, newStats);
         setStats(newStats);
@@ -72,6 +77,8 @@ export default function ClickerGame() {
     };
 
     setStats(newStats);
+    setClickEffect(true);
+    setTimeout(() => setClickEffect(false), 100);
 
     try {
       const playerRef = doc(db, 'players', user.uid);
@@ -83,6 +90,20 @@ export default function ClickerGame() {
     } catch (error) {
       console.error('Error updating player stats:', error);
     }
+  };
+
+  const handlePurchase = (cost: number) => {
+    setStats(prev => ({
+      ...prev,
+      power: prev.power - cost,
+    }));
+  };
+
+  const handleCombatWin = (powerGain: number) => {
+    setStats(prev => ({
+      ...prev,
+      power: prev.power + powerGain,
+    }));
   };
 
   if (isLoading) {
@@ -110,10 +131,17 @@ export default function ClickerGame() {
       <div className="flex justify-center">
         <button
           onClick={handleClick}
-          className="w-32 h-32 rounded-full bg-cyber-pink hover:bg-cyber-purple transition-colors flex items-center justify-center font-press-start text-xl"
+          className={`w-32 h-32 rounded-full bg-cyber-pink hover:bg-cyber-purple transition-all flex items-center justify-center font-press-start text-xl ${
+            clickEffect ? 'scale-90' : 'scale-100'
+          }`}
         >
           CLICK!
         </button>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+        <PowerUps power={stats.power} onPurchase={handlePurchase} />
+        <Combat playerPower={stats.power} onWin={handleCombatWin} />
       </div>
     </div>
   );
