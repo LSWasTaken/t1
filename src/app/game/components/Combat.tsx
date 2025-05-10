@@ -107,29 +107,49 @@ export default function Combat() {
     fetchPlayerData();
   }, [user]);
 
-  // Queue timeout effect
+  // Add polling for opponents
   useEffect(() => {
-    let timer: NodeJS.Timeout;
+    let pollInterval: NodeJS.Timeout;
+
+    const findOpponent = async () => {
+      if (!user || !inQueue || opponent) return;
+
+      try {
+        const q = query(
+          collection(db, 'players'),
+          where('uid', '!=', user.uid),
+          where('inQueue', '==', true)
+        );
+
+        const querySnapshot = await getDocs(q);
+        const potentialOpponents = querySnapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data()
+        } as Player));
+
+        if (potentialOpponents.length > 0) {
+          // Randomly select an opponent
+          const randomIndex = Math.floor(Math.random() * potentialOpponents.length);
+          const selectedOpponent = potentialOpponents[randomIndex];
+          setOpponent(selectedOpponent);
+          setBattleLog([`Found opponent: ${selectedOpponent.username || selectedOpponent.email?.split('@')[0] || 'Anonymous'}`]);
+        }
+      } catch (error) {
+        console.error('Error finding opponent:', error);
+      }
+    };
+
     if (inQueue && !opponent) {
-      timer = setInterval(() => {
-        setQueueTimer((prev) => {
-          if (prev <= 1) {
-            clearInterval(timer);
-            leaveQueue();
-            setBattleLog(['Queue timed out. No players found.']);
-            return 50;
-          }
-          return prev - 1;
-        });
-      }, 1000);
-    } else {
-      setQueueTimer(50);
+      // Poll every 2 seconds for opponents
+      pollInterval = setInterval(findOpponent, 2000);
+      // Also try immediately
+      findOpponent();
     }
 
     return () => {
-      if (timer) clearInterval(timer);
+      if (pollInterval) clearInterval(pollInterval);
     };
-  }, [inQueue, opponent]);
+  }, [user, inQueue, opponent]);
 
   // Add copy-paste prevention
   useEffect(() => {
@@ -154,6 +174,30 @@ export default function Combat() {
     setOpponentHealth(MAX_HEALTH);
   };
 
+  // Queue timeout effect
+  useEffect(() => {
+    let timer: NodeJS.Timeout;
+    if (inQueue && !opponent) {
+      timer = setInterval(() => {
+        setQueueTimer((prev) => {
+          if (prev <= 1) {
+            clearInterval(timer);
+            leaveQueue();
+            setBattleLog(['Queue timed out. No players found.']);
+            return 50;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+    } else {
+      setQueueTimer(50);
+    }
+
+    return () => {
+      if (timer) clearInterval(timer);
+    };
+  }, [inQueue, opponent]);
+
   const joinQueue = async () => {
     if (!user) return;
     setIsSearching(true);
@@ -172,7 +216,7 @@ export default function Combat() {
       setInQueue(true);
       setBattleLog(['Waiting for opponent...']);
 
-      // Find opponent in queue
+      // Initial opponent search
       const q = query(
         collection(db, 'players'),
         where('uid', '!=', user.uid),
@@ -186,13 +230,12 @@ export default function Combat() {
       } as Player));
 
       if (potentialOpponents.length > 0) {
-        // Randomly select an opponent
         const randomIndex = Math.floor(Math.random() * potentialOpponents.length);
         const selectedOpponent = potentialOpponents[randomIndex];
         setOpponent(selectedOpponent);
         setBattleLog([`Found opponent: ${selectedOpponent.username || selectedOpponent.email?.split('@')[0] || 'Anonymous'}`]);
       } else {
-        setBattleLog(['No players found in queue. Waiting...']);
+        setBattleLog(['No players found in queue. Waiting for opponents...']);
       }
     } catch (error) {
       console.error('Error joining queue:', error);
