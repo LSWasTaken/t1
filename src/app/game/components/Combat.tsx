@@ -41,6 +41,7 @@ export default function Combat() {
   const [opponentHealth, setOpponentHealth] = useState(MAX_HEALTH);
   const [isInCombat, setIsInCombat] = useState(false);
   const [inQueue, setInQueue] = useState(false);
+  const [queueTimer, setQueueTimer] = useState(50);
 
   useEffect(() => {
     const fetchPlayerData = async () => {
@@ -61,6 +62,30 @@ export default function Combat() {
 
     fetchPlayerData();
   }, [user]);
+
+  // Queue timeout effect
+  useEffect(() => {
+    let timer: NodeJS.Timeout;
+    if (inQueue && !opponent) {
+      timer = setInterval(() => {
+        setQueueTimer((prev) => {
+          if (prev <= 1) {
+            clearInterval(timer);
+            leaveQueue();
+            setBattleLog(['Queue timed out. No players found.']);
+            return 50;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+    } else {
+      setQueueTimer(50);
+    }
+
+    return () => {
+      if (timer) clearInterval(timer);
+    };
+  }, [inQueue, opponent]);
 
   // Add copy-paste prevention
   useEffect(() => {
@@ -90,6 +115,7 @@ export default function Combat() {
     setIsSearching(true);
     setBattleLog([]);
     resetHealth();
+    setQueueTimer(50);
 
     try {
       const playerRef = doc(db, 'players', user.uid);
@@ -119,6 +145,8 @@ export default function Combat() {
         const selectedOpponent = potentialOpponents[randomIndex];
         setOpponent(selectedOpponent);
         setBattleLog([`Found opponent: ${selectedOpponent.username || selectedOpponent.email?.split('@')[0] || 'Anonymous'}`]);
+      } else {
+        setBattleLog(['No players found in queue. Waiting...']);
       }
     } catch (error) {
       console.error('Error joining queue:', error);
@@ -354,7 +382,7 @@ export default function Combat() {
               </button>
               {inQueue && (
                 <div className="text-cyber-yellow text-center animate-pulse text-lg">
-                  Waiting for opponent...
+                  Waiting for opponent... ({queueTimer}s)
                 </div>
               )}
             </div>
