@@ -1,1 +1,7 @@
-{}
+{
+  "/_app": "pages/_app.js",
+  "/_error": "pages/_error.js",
+  "/api/signup": "pages/api/signup.js",
+  "/api/submit-score": "pages/api/submit-score.js",
+  "/_document": "pages/_document.js"
+}
