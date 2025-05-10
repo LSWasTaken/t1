@@ -309,14 +309,46 @@ export default function Combat() {
     };
   }, [inQueue, opponent]);
 
+  // Add queue state effect
+  useEffect(() => {
+    const fetchQueueState = async () => {
+      if (!user) return;
+
+      try {
+        const playerRef = doc(db, 'players', user.uid);
+        const playerDoc = await getDoc(playerRef);
+        const playerData = playerDoc.data();
+        
+        if (playerData?.inQueue) {
+          setInQueue(true);
+          setBattleLog(['You are already in queue!']);
+          setQueueTimer(50);
+          setCanLeaveQueue(true);
+          setQueueCooldown(0);
+        }
+      } catch (error) {
+        console.error('Error fetching queue state:', error);
+      }
+    };
+
+    fetchQueueState();
+  }, [user]);
+
   const joinQueue = async () => {
     if (!user) return;
+    
+    // Check if already in queue
+    if (inQueue) {
+      setBattleLog(['You are already in queue!']);
+      return;
+    }
+
     setIsSearching(true);
     setBattleLog([]);
     resetHealth();
     setQueueTimer(50);
-    setCanLeaveQueue(false);
-    setQueueCooldown(5);
+    setCanLeaveQueue(true);
+    setQueueCooldown(0);
     setMatchFound(false);
 
     try {
@@ -377,6 +409,7 @@ export default function Combat() {
 
   const leaveQueue = async () => {
     if (!user) return;
+    
     try {
       const playerRef = doc(db, 'players', user.uid);
       
@@ -422,6 +455,7 @@ export default function Combat() {
       setQueueTimer(50);
       setCanLeaveQueue(true);
       setQueueCooldown(0);
+      setMatchFound(false);
     } catch (error) {
       console.error('Error leaving queue:', error);
       setBattleLog(['Error leaving queue. Try again!']);
@@ -697,10 +731,9 @@ export default function Combat() {
                   )}
                   <button
                     onClick={leaveQueue}
-                    disabled={!canLeaveQueue}
-                    className="w-full px-6 py-4 bg-cyber-black border-2 border-cyber-pink text-cyber-pink rounded-lg font-press-start hover:bg-cyber-purple transition-colors disabled:opacity-50 text-lg"
+                    className="w-full px-6 py-4 bg-cyber-black border-2 border-cyber-pink text-cyber-pink rounded-lg font-press-start hover:bg-cyber-purple transition-colors text-lg"
                   >
-                    {!canLeaveQueue ? `Leave Queue (${queueCooldown}s)` : 'Leave Queue'}
+                    Leave Queue
                   </button>
                 </div>
               )}
