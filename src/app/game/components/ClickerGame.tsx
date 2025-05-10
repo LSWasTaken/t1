@@ -194,7 +194,7 @@ export default function ClickerGame() {
           </div>
 
           <div className="space-y-6">
-            <Combat playerPower={power} />
+            <Combat />
             <Leaderboard />
           </div>
         </div>
