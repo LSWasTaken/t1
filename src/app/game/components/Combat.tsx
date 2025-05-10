@@ -42,6 +42,50 @@ export default function Combat() {
   const [isInCombat, setIsInCombat] = useState(false);
   const [inQueue, setInQueue] = useState(false);
   const [queueTimer, setQueueTimer] = useState(50);
+  const [canLeaveQueue, setCanLeaveQueue] = useState(true);
+  const [queueCooldown, setQueueCooldown] = useState(0);
+
+  // Load state from localStorage
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const savedState = localStorage.getItem('combatState');
+      if (savedState) {
+        const { playerHealth: savedHealth, opponentHealth: savedOpponentHealth } = JSON.parse(savedState);
+        setPlayerHealth(savedHealth);
+        setOpponentHealth(savedOpponentHealth);
+      }
+    }
+  }, []);
+
+  // Save state to localStorage
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('combatState', JSON.stringify({
+        playerHealth,
+        opponentHealth
+      }));
+    }
+  }, [playerHealth, opponentHealth]);
+
+  // Queue cooldown effect
+  useEffect(() => {
+    let timer: NodeJS.Timeout;
+    if (queueCooldown > 0) {
+      timer = setInterval(() => {
+        setQueueCooldown((prev) => {
+          if (prev <= 1) {
+            setCanLeaveQueue(true);
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+    }
+
+    return () => {
+      if (timer) clearInterval(timer);
+    };
+  }, [queueCooldown]);
 
   useEffect(() => {
     const fetchPlayerData = async () => {
@@ -116,6 +160,8 @@ export default function Combat() {
     setBattleLog([]);
     resetHealth();
     setQueueTimer(50);
+    setCanLeaveQueue(false);
+    setQueueCooldown(5);
 
     try {
       const playerRef = doc(db, 'players', user.uid);
@@ -158,7 +204,7 @@ export default function Combat() {
   };
 
   const leaveQueue = async () => {
-    if (!user) return;
+    if (!user || !canLeaveQueue) return;
     try {
       const playerRef = doc(db, 'players', user.uid);
       
@@ -375,7 +421,7 @@ export default function Combat() {
             <div className="space-y-4">
               <button
                 onClick={inQueue ? leaveQueue : joinQueue}
-                disabled={isSearching}
+                disabled={isSearching || (inQueue && !canLeaveQueue)}
                 className="w-full px-6 py-4 bg-cyber-pink text-white rounded-lg font-press-start hover:bg-cyber-purple transition-colors disabled:opacity-50 text-lg"
               >
                 {isSearching ? 'Searching...' : inQueue ? 'Leave Queue' : 'Join Queue'}
@@ -383,6 +429,7 @@ export default function Combat() {
               {inQueue && (
                 <div className="text-cyber-yellow text-center animate-pulse text-lg">
                   Waiting for opponent... ({queueTimer}s)
+                  {!canLeaveQueue && ` (Can leave in ${queueCooldown}s)`}
                 </div>
               )}
             </div>
