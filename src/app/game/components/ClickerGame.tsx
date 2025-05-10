@@ -1,27 +1,37 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useAuth } from '@/lib/auth';
 import { db } from '@/lib/firebase';
-import { doc, getDoc, setDoc, updateDoc, increment } from 'firebase/firestore';
+import { doc, getDoc, setDoc, updateDoc, increment, onSnapshot } from 'firebase/firestore';
 import { useRouter } from 'next/navigation';
-import PowerUps from './PowerUps';
 import Combat from './Combat';
 import Leaderboard from './Leaderboard';
+
+interface Obstacle {
+  x: number;
+  height: number;
+  passed: boolean;
+}
 
 export default function ClickerGame() {
   const { user } = useAuth();
   const router = useRouter();
   const [power, setPower] = useState(0);
-  const [clicks, setClicks] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
-  const [clickPower, setClickPower] = useState(1);
-  const [autoClickPower, setAutoClickPower] = useState(0);
-  const [powerUps, setPowerUps] = useState({
-    doubleClick: false,
-    autoClick: false,
-    megaClick: false,
-  });
+  const [gameStarted, setGameStarted] = useState(false);
+  const [gameOver, setGameOver] = useState(false);
+  const [score, setScore] = useState(0);
+  const [highScore, setHighScore] = useState(0);
+  const [birdY, setBirdY] = useState(250);
+  const [birdVelocity, setBirdVelocity] = useState(0);
+  const [obstacles, setObstacles] = useState<Obstacle[]>([]);
+  const gameAreaRef = useRef<HTMLDivElement>(null);
+  const gameLoopRef = useRef<number>();
+  const GRAVITY = 0.5;
+  const JUMP_FORCE = -10;
+  const OBSTACLE_SPEED = 3;
+  const OBSTACLE_SPAWN_INTERVAL = 2000;
 
   useEffect(() => {
     if (user) {
@@ -30,14 +40,20 @@ export default function ClickerGame() {
   }, [user]);
 
   useEffect(() => {
-    let interval: NodeJS.Timeout;
-    if (autoClickPower > 0) {
-      interval = setInterval(() => {
-        setPower(prev => prev + autoClickPower);
-      }, 1000);
-    }
-    return () => clearInterval(interval);
-  }, [autoClickPower]);
+    if (!user) return;
+
+    const playerRef = doc(db, 'players', user.uid);
+    
+    const unsubscribe = onSnapshot(playerRef, (doc) => {
+      const playerData = doc.data();
+      if (playerData) {
+        setPower(playerData.power || 0);
+        setHighScore(playerData.highScore || 0);
+      }
+    });
+
+    return () => unsubscribe();
+  }, [user]);
 
   const loadPlayerData = async () => {
     if (!user) return;
@@ -49,28 +65,13 @@ export default function ClickerGame() {
       if (playerDoc.exists()) {
         const data = playerDoc.data();
         setPower(data.power || 0);
-        setClicks(data.clicks || 0);
-        setClickPower(data.clickPower || 1);
-        setAutoClickPower(data.autoClickPower || 0);
-        setPowerUps(data.powerUps || {
-          doubleClick: false,
-          autoClick: false,
-          megaClick: false,
-        });
+        setHighScore(data.highScore || 0);
       } else {
-        // Initialize new player
         await setDoc(playerRef, {
           uid: user.uid,
           email: user.email,
           power: 0,
-          clicks: 0,
-          clickPower: 1,
-          autoClickPower: 0,
-          powerUps: {
-            doubleClick: false,
-            autoClick: false,
-            megaClick: false,
-          },
+          highScore: 0,
           wins: 0,
           losses: 0,
           username: user.email?.split('@')[0] || 'Anonymous',
@@ -83,66 +84,106 @@ export default function ClickerGame() {
     }
   };
 
-  const handleClick = async () => {
-    if (!user) return;
+  const startGame = () => {
+    setGameStarted(true);
+    setGameOver(false);
+    setScore(0);
+    setBirdY(250);
+    setBirdVelocity(0);
+    setObstacles([]);
+    gameLoopRef.current = requestAnimationFrame(gameLoop);
+    spawnObstacle();
+  };
 
+  const gameLoop = () => {
+    if (!gameStarted || gameOver) return;
+
+    // Update bird position
+    setBirdY(prev => {
+      const newY = prev + birdVelocity;
+      if (newY < 0 || newY > 500) {
+        endGame();
+        return prev;
+      }
+      return newY;
+    });
+    setBirdVelocity(prev => prev + GRAVITY);
+
+    // Update obstacles
+    setObstacles(prev => {
+      const newObstacles = prev.map(obs => ({
+        ...obs,
+        x: obs.x - OBSTACLE_SPEED,
+        passed: obs.passed || obs.x < 50
+      })).filter(obs => obs.x > -50);
+
+      // Check for collisions
+      newObstacles.forEach(obs => {
+        if (obs.x < 100 && obs.x > 0) {
+          if (birdY < obs.height - 100 || birdY > obs.height + 100) {
+            endGame();
+          }
+        }
+        // Award power for passing obstacles
+        if (!obs.passed && obs.x < 50) {
+          awardPower();
+          setScore(s => s + 1);
+        }
+      });
+
+      return newObstacles;
+    });
+
+    gameLoopRef.current = requestAnimationFrame(gameLoop);
+  };
+
+  const spawnObstacle = () => {
+    if (!gameStarted || gameOver) return;
+
+    const height = Math.random() * 300 + 100;
+    setObstacles(prev => [...prev, { x: 600, height, passed: false }]);
+    setTimeout(spawnObstacle, OBSTACLE_SPAWN_INTERVAL);
+  };
+
+  const handleJump = () => {
+    if (!gameStarted) {
+      startGame();
+    }
+    setBirdVelocity(JUMP_FORCE);
+  };
+
+  const awardPower = async () => {
+    if (!user) return;
+    const powerGain = 1;
     try {
       const playerRef = doc(db, 'players', user.uid);
-      const newPower = power + clickPower;
-      const newClicks = clicks + 1;
-
-      setPower(newPower);
-      setClicks(newClicks);
-
       await updateDoc(playerRef, {
-        power: newPower,
-        clicks: newClicks,
+        power: increment(powerGain)
       });
+      setPower(prev => prev + powerGain);
     } catch (error) {
       console.error('Error updating power:', error);
     }
   };
 
-  const handlePowerUp = async (type: string, cost: number) => {
-    if (!user || power < cost) return;
+  const endGame = async () => {
+    setGameOver(true);
+    setGameStarted(false);
+    if (gameLoopRef.current) {
+      cancelAnimationFrame(gameLoopRef.current);
+    }
 
+    if (!user) return;
     try {
       const playerRef = doc(db, 'players', user.uid);
-      const newPower = power - cost;
-
-      switch (type) {
-        case 'doubleClick':
-          setClickPower(prev => prev * 2);
-          setPowerUps(prev => ({ ...prev, doubleClick: true }));
-          await updateDoc(playerRef, {
-            power: newPower,
-            clickPower: clickPower * 2,
-            'powerUps.doubleClick': true,
-          });
-          break;
-        case 'autoClick':
-          setAutoClickPower(prev => prev + 1);
-          setPowerUps(prev => ({ ...prev, autoClick: true }));
-          await updateDoc(playerRef, {
-            power: newPower,
-            autoClickPower: autoClickPower + 1,
-            'powerUps.autoClick': true,
-          });
-          break;
-        case 'megaClick':
-          setClickPower(prev => prev * 5);
-          setPowerUps(prev => ({ ...prev, megaClick: true }));
-          await updateDoc(playerRef, {
-            power: newPower,
-            clickPower: clickPower * 5,
-            'powerUps.megaClick': true,
-          });
-          break;
+      if (score > highScore) {
+        await updateDoc(playerRef, {
+          highScore: score
+        });
+        setHighScore(score);
       }
-
-      setPower(newPower);
     } catch (error) {
-      console.error('Error purchasing power-up:', error);
+      console.error('Error updating high score:', error);
     }
   };
 
@@ -175,22 +216,71 @@ export default function ClickerGame() {
               <h2 className="text-2xl font-press-start text-cyber-pink mb-4">
                 Your Power: {power}
               </h2>
-              <p className="text-cyber-blue mb-4">
-                Click Power: {clickPower} | Auto Power: {autoClickPower}/s
-              </p>
-              <button
-                onClick={handleClick}
-                className="w-full py-4 bg-cyber-pink text-white rounded-lg font-press-start hover:bg-cyber-purple transition-colors"
+              <div className="text-cyber-blue mb-4">
+                Score: {score} | High Score: {highScore}
+              </div>
+              <div 
+                ref={gameAreaRef}
+                className="relative w-full h-[500px] bg-cyber-black border-2 border-cyber-pink rounded-lg overflow-hidden"
+                onClick={handleJump}
               >
-                Click to Fight!
-              </button>
-            </div>
+                {/* Bird */}
+                <div 
+                  className="absolute w-8 h-8 bg-cyber-pink rounded-full"
+                  style={{ top: `${birdY}px`, left: '50px' }}
+                />
+                
+                {/* Obstacles */}
+                {obstacles.map((obs, index) => (
+                  <div key={index}>
+                    <div 
+                      className="absolute w-10 bg-cyber-blue"
+                      style={{ 
+                        top: 0, 
+                        left: `${obs.x}px`, 
+                        height: `${obs.height - 100}px` 
+                      }}
+                    />
+                    <div 
+                      className="absolute w-10 bg-cyber-blue"
+                      style={{ 
+                        bottom: 0, 
+                        left: `${obs.x}px`, 
+                        height: `${500 - obs.height - 100}px` 
+                      }}
+                    />
+                  </div>
+                ))}
 
-            <PowerUps
-              power={power}
-              powerUps={powerUps}
-              onPurchase={handlePowerUp}
-            />
+                {/* Game Over Screen */}
+                {gameOver && (
+                  <div className="absolute inset-0 flex flex-col items-center justify-center bg-cyber-black bg-opacity-80">
+                    <div className="text-2xl font-press-start text-cyber-pink mb-4">
+                      Game Over!
+                    </div>
+                    <button
+                      onClick={startGame}
+                      className="px-6 py-3 bg-cyber-pink text-white rounded-lg font-press-start hover:bg-cyber-purple transition-colors"
+                    >
+                      Play Again
+                    </button>
+                  </div>
+                )}
+
+                {/* Start Screen */}
+                {!gameStarted && !gameOver && (
+                  <div className="absolute inset-0 flex flex-col items-center justify-center">
+                    <div className="text-2xl font-press-start text-cyber-pink mb-4">
+                      Click to Start
+                    </div>
+                    <div className="text-cyber-blue text-center">
+                      Click to flap and dodge obstacles!<br />
+                      Each obstacle passed gives you 1 power!
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
 
           <div className="space-y-6">

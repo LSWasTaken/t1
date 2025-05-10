@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useAuth } from '@/lib/auth';
 import { db } from '@/lib/firebase';
-import { collection, query, where, orderBy, limit, getDocs, doc, updateDoc, increment, addDoc, serverTimestamp, FieldValue, getDoc } from 'firebase/firestore';
+import { collection, query, where, orderBy, limit, getDocs, doc, updateDoc, increment, addDoc, serverTimestamp, FieldValue, getDoc, onSnapshot } from 'firebase/firestore';
 
 interface Match {
   id: string;
@@ -59,6 +59,8 @@ export default function TanzaMode() {
   const [cooldownTime, setCooldownTime] = useState(0);
   const [lastTextTime, setLastTextTime] = useState<number>(0);
   const MIN_TIME_BETWEEN_TEXTS = 5000; // 5 seconds minimum between texts
+  const [winStreak, setWinStreak] = useState(0);
+  const [highestWinStreak, setHighestWinStreak] = useState(0);
 
   useEffect(() => {
     const fetchPlayerData = async () => {
@@ -77,6 +79,25 @@ export default function TanzaMode() {
 
     fetchPlayerData();
     fetchBattleHistory();
+  }, [user]);
+
+  // Add real-time player data sync
+  useEffect(() => {
+    if (!user) return;
+
+    const playerRef = doc(db, 'players', user.uid);
+    
+    // Set up real-time listener for player data
+    const unsubscribe = onSnapshot(playerRef, (doc) => {
+      const playerData = doc.data();
+      if (playerData) {
+        setPlayerPower(playerData.power || 0);
+        setWinStreak(playerData.winStreak || 0);
+        setHighestWinStreak(playerData.highestWinStreak || 0);
+      }
+    });
+
+    return () => unsubscribe();
   }, [user]);
 
   const fetchBattleHistory = async () => {

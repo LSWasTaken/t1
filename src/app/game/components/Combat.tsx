@@ -234,7 +234,26 @@ export default function Combat() {
     };
   }, []);
 
-  // Add real-time health sync
+  // Add real-time player data sync
+  useEffect(() => {
+    if (!user) return;
+
+    const playerRef = doc(db, 'players', user.uid);
+    
+    // Set up real-time listener for player data
+    const unsubscribe = onSnapshot(playerRef, (doc) => {
+      const playerData = doc.data();
+      if (playerData) {
+        setPlayerPower(playerData.power || 0);
+        setInQueue(playerData.inQueue || false);
+        // Update other player stats as needed
+      }
+    });
+
+    return () => unsubscribe();
+  }, [user]);
+
+  // Add real-time battle sync
   useEffect(() => {
     if (!user || !opponent) return;
 
