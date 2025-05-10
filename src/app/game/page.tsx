@@ -7,40 +7,38 @@ import ClickerGame from './components/ClickerGame';
 import Leaderboard from './components/Leaderboard';
 
 export default function GamePage() {
-  const { user, logout } = useAuth();
+  const { user, loading } = useAuth();
   const router = useRouter();
 
   useEffect(() => {
-    if (!user) {
+    if (!loading && !user) {
       router.push('/login');
     }
-  }, [user, router]);
+  }, [user, loading, router]);
+
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-cyber-black text-white">
+        <div className="text-2xl font-press-start text-cyber-pink">Loading...</div>
+      </div>
+    );
+  }
 
   if (!user) {
     return null;
   }
 
   return (
-    <main className="min-h-screen bg-cyber-black text-white">
-      <div className="container mx-auto px-4 py-8">
-        <div className="flex justify-between items-center mb-8">
-          <h1 className="font-press-start text-3xl text-cyber-pink">Cyberpunk Game</h1>
-          <button
-            onClick={() => {
-              logout();
-              router.push('/');
-            }}
-            className="px-4 py-2 bg-cyber-pink text-white rounded-lg font-press-start hover:bg-cyber-purple transition-colors"
-          >
-            Logout
-          </button>
-        </div>
-
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-          <div className="bg-cyber-dark rounded-lg p-8 shadow-cyber">
+    <main className="min-h-screen p-4 bg-cyber-black text-white">
+      <div className="max-w-7xl mx-auto">
+        <h1 className="text-3xl md:text-4xl font-press-start text-cyber-pink mb-8 text-center">
+          Tanza Fighter Arena
+        </h1>
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+          <div className="lg:col-span-2">
             <ClickerGame />
           </div>
-          <div className="bg-cyber-dark rounded-lg p-8 shadow-cyber">
+          <div>
             <Leaderboard />
           </div>
         </div>

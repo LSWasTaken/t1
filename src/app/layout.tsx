@@ -7,8 +7,8 @@ import { AuthProvider } from '@/lib/auth'
 const inter = Inter({ subsets: ['latin'] })
 
 export const metadata = {
-  title: 'Cyberpunk Game',
-  description: 'A cyberpunk-themed game with authentication',
+  title: 'Tanza Fighter - Cyberpunk Clicker Game',
+  description: 'A cyberpunk-themed clicker game where you fight your way to the top!',
 }
 
 export default function RootLayout({
@@ -24,12 +24,12 @@ export default function RootLayout({
           rel="stylesheet"
         />
       </head>
-      <body className={`${inter.className} bg-cyber-black text-white antialiased`}>
+      <body className={`${inter.className} font-press-start antialiased`}>
         <AuthProvider>
           {children}
           <ToastContainer
             position="top-right"
-            autoClose={5000}
+            autoClose={3000}
             hideProgressBar={false}
             newestOnTop
             closeOnClick

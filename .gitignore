@@ -38,5 +38,11 @@ next-env.d.ts
 *.swp
 *.swo
 
-# VS Code
-.vs/
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db

@@ -1,120 +1,118 @@
 'use client';
 
 import { useState } from 'react';
-import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth';
-import { toast } from 'react-toastify';
+import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 
 export default function LoginPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
-  const router = useRouter();
+  const [isSignUp, setIsSignUp] = useState(false);
   const { signIn, signUp, signInWithGithub } = useAuth();
+  const router = useRouter();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setIsLoading(true);
-
     try {
-      await signIn(email, password);
-      toast.success('Logged in successfully!');
-      router.push('/');
-    } catch (error: any) {
-      if (error.code === 'auth/user-not-found') {
-        try {
-          await signUp(email, password);
-          toast.success('Account created and logged in!');
-          router.push('/');
-        } catch (signUpError: any) {
-          toast.error(signUpError.message);
-        }
+      if (isSignUp) {
+        await signUp(email, password);
       } else {
-        toast.error(error.message);
+        await signIn(email, password);
       }
-    } finally {
-      setIsLoading(false);
+      router.push('/game');
+    } catch (error) {
+      console.error('Authentication error:', error);
     }
   };
 
   const handleGithubSignIn = async () => {
-    setIsLoading(true);
     try {
       await signInWithGithub();
-      toast.success('Logged in with GitHub!');
-      router.push('/');
-    } catch (error: any) {
-      toast.error(error.message);
-    } finally {
-      setIsLoading(false);
+      router.push('/game');
+    } catch (error) {
+      console.error('GitHub authentication error:', error);
     }
   };
 
   return (
-    <main className="min-h-screen bg-cyber-black text-white flex items-center justify-center">
-      <div className="w-full max-w-md p-8 space-y-8 bg-cyber-dark rounded-lg shadow-cyber">
-        <div className="text-center">
-          <h1 className="font-press-start text-3xl text-cyber-pink mb-2">Login</h1>
-          <p className="text-cyber-blue">Enter your credentials to continue</p>
+    <main className="min-h-screen flex items-center justify-center p-4 bg-cyber-black text-white">
+      <div className="w-full max-w-md">
+        <div className="text-center mb-8">
+          <h1 className="text-4xl font-press-start text-cyber-pink mb-4">
+            Tanza Fighter
+          </h1>
+          <p className="text-cyber-blue">
+            {isSignUp ? 'Create your fighter account' : 'Welcome back, fighter!'}
+          </p>
         </div>
 
-        <form onSubmit={handleSubmit} className="space-y-6">
-          <div>
-            <label htmlFor="email" className="block text-sm font-medium text-cyber-blue">
-              Email
-            </label>
-            <input
-              id="email"
-              type="email"
-              required
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              className="mt-1 block w-full px-3 py-2 bg-cyber-black border border-cyber-pink rounded-md text-white focus:outline-none focus:ring-2 focus:ring-cyber-pink"
-              placeholder="Enter your email"
-            />
-          </div>
-
-          <div>
-            <label htmlFor="password" className="block text-sm font-medium text-cyber-blue">
-              Password
-            </label>
-            <input
-              id="password"
-              type="password"
-              required
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="mt-1 block w-full px-3 py-2 bg-cyber-black border border-cyber-pink rounded-md text-white focus:outline-none focus:ring-2 focus:ring-cyber-pink"
-              placeholder="Enter your password"
-            />
-          </div>
-
-          <button
-            type="submit"
-            disabled={isLoading}
-            className="w-full py-2 px-4 border border-transparent rounded-md shadow-sm text-white bg-cyber-pink hover:bg-cyber-purple focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-cyber-pink font-press-start disabled:opacity-50"
-          >
-            {isLoading ? 'Loading...' : 'Sign In / Sign Up'}
-          </button>
-        </form>
-
-        <div className="mt-6">
-          <div className="relative">
-            <div className="absolute inset-0 flex items-center">
-              <div className="w-full border-t border-cyber-pink"></div>
+        <div className="bg-cyber-dark rounded-lg p-8 shadow-cyber">
+          <form onSubmit={handleSubmit} className="space-y-6">
+            <div>
+              <label htmlFor="email" className="block text-cyber-blue mb-2">
+                Email
+              </label>
+              <input
+                type="email"
+                id="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                className="w-full px-4 py-2 bg-cyber-black border border-cyber-pink rounded-lg text-white focus:outline-none focus:border-cyber-purple"
+                required
+              />
             </div>
-            <div className="relative flex justify-center text-sm">
-              <span className="px-2 bg-cyber-dark text-cyber-blue">Or continue with</span>
+
+            <div>
+              <label htmlFor="password" className="block text-cyber-blue mb-2">
+                Password
+              </label>
+              <input
+                type="password"
+                id="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="w-full px-4 py-2 bg-cyber-black border border-cyber-pink rounded-lg text-white focus:outline-none focus:border-cyber-purple"
+                required
+              />
             </div>
+
+            <button
+              type="submit"
+              className="w-full py-3 bg-cyber-pink text-white rounded-lg font-press-start hover:bg-cyber-purple transition-colors"
+            >
+              {isSignUp ? 'Create Account' : 'Sign In'}
+            </button>
+          </form>
+
+          <div className="mt-6">
+            <button
+              onClick={handleGithubSignIn}
+              className="w-full py-3 bg-cyber-blue text-white rounded-lg font-press-start hover:bg-cyber-purple transition-colors"
+            >
+              Sign in with GitHub
+            </button>
           </div>
 
-          <button
-            onClick={handleGithubSignIn}
-            disabled={isLoading}
-            className="mt-4 w-full py-2 px-4 border border-cyber-pink rounded-md shadow-sm text-white bg-cyber-black hover:bg-cyber-dark focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-cyber-pink font-press-start disabled:opacity-50"
+          <div className="mt-6 text-center">
+            <button
+              onClick={() => setIsSignUp(!isSignUp)}
+              className="text-cyber-blue hover:text-cyber-pink transition-colors"
+            >
+              {isSignUp
+                ? 'Already have an account? Sign in'
+                : "Don't have an account? Sign up"}
+            </button>
+          </div>
+        </div>
+
+        <div className="mt-8 text-center">
+          <Link
+            href="/"
+            className="text-cyber-blue hover:text-cyber-pink transition-colors"
           >
-            GitHub
-          </button>
+            Back to Home
+          </Link>
         </div>
       </div>
     </main>
