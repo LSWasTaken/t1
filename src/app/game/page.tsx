@@ -3,6 +3,8 @@
 import { useAuth } from '@/lib/auth';
 import { useRouter } from 'next/navigation';
 import { useEffect } from 'react';
+import ClickerGame from './components/ClickerGame';
+import Leaderboard from './components/Leaderboard';
 
 export default function GamePage() {
   const { user, logout } = useAuth();
@@ -34,14 +36,12 @@ export default function GamePage() {
           </button>
         </div>
 
-        <div className="bg-cyber-dark rounded-lg p-8 shadow-cyber">
-          <div className="text-center">
-            <h2 className="font-press-start text-2xl text-cyber-blue mb-4">
-              Welcome to the Game, {user.email}!
-            </h2>
-            <p className="text-cyber-green mb-8">
-              Game content will be added here...
-            </p>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+          <div className="bg-cyber-dark rounded-lg p-8 shadow-cyber">
+            <ClickerGame />
+          </div>
+          <div className="bg-cyber-dark rounded-lg p-8 shadow-cyber">
+            <Leaderboard />
           </div>
         </div>
       </div>
