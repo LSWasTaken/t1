@@ -74,21 +74,55 @@ const QueueComponent: React.FC<QueueProps> = ({ user, db, onQueueUpdate, onMatch
 
   // --- Firestore Real-time Listeners ---
 
+  const initializePlayerDocument = async (playerRef: any) => {
+    try {
+      console.log('Initializing player document for:', user.uid);
+      const initialData = {
+        uid: user.uid,
+        username: user.email?.split('@')[0] || 'Player',
+        email: user.email || '',
+        inQueue: false,
+        status: 'online',
+        currentOpponent: null,
+        challengeFrom: null,
+        power: 0,
+        wins: 0,
+        losses: 0,
+        lastMatch: serverTimestamp()
+      };
+      console.log('Initial player data:', initialData);
+      
+      await setDoc(playerRef, initialData);
+      console.log('Player document created successfully');
+      logMessage('New player profile created.', 'success');
+      
+      // Force a refresh of the player data
+      const docSnap = await getDoc(playerRef);
+      if (docSnap.exists()) {
+        const playerData = { uid: docSnap.id, ...docSnap.data() } as Player;
+        setPlayerData(playerData);
+        logMessage('Player data loaded successfully.', 'success');
+      }
+    } catch (err: any) {
+      console.error('Error creating player document:', err);
+      logMessage(`Failed to create player profile: ${err.message}`, 'error');
+      setError(`Failed to create player profile: ${err.message}`);
+    }
+  };
+
   // 1. Listener for the current player's document
   useEffect(() => {
     if (!user || !db) {
-      setPlayerData(null); // Clear player data if no user or db
+      setPlayerData(null);
       return;
     }
 
-    // Verify authentication state
     const verifyAuth = async () => {
       try {
         const currentUser = auth.currentUser;
         if (!currentUser) {
           throw new Error('Authentication state lost');
         }
-        // Force refresh token and log the result
         const token = await currentUser.getIdToken(true);
         console.log('Auth token refreshed successfully');
         return true;
@@ -100,34 +134,18 @@ const QueueComponent: React.FC<QueueProps> = ({ user, db, onQueueUpdate, onMatch
       }
     };
 
-    const initializePlayerDocument = async (playerRef: any) => {
-      try {
-        await setDoc(playerRef, {
-          uid: user.uid,
-          username: user.email?.split('@')[0] || 'Player',
-          email: user.email || '',
-          inQueue: false,
-          status: 'online',
-          currentOpponent: null,
-          challengeFrom: null,
-          power: 0,
-          wins: 0,
-          losses: 0,
-          lastMatch: serverTimestamp()
-        });
-        logMessage('New player profile created.', 'success');
-      } catch (err: any) {
-        console.error('Error creating player document:', err);
-        logMessage('Failed to create player profile. Please try again.', 'error');
-        setError('Failed to create player profile. Please try again.');
-      }
-    };
-
     const setupPlayerListener = async () => {
       if (!(await verifyAuth())) return;
 
       const playerRef = doc(db, 'players', user.uid);
       console.log('Setting up player listener for:', user.uid);
+      
+      // First check if document exists
+      const docSnap = await getDoc(playerRef);
+      if (!docSnap.exists()) {
+        console.log('Player document does not exist, creating new document...');
+        await initializePlayerDocument(playerRef);
+      }
       
       const unsubscribePlayer = onSnapshot(playerRef, async (docSnap) => {
         console.log('Player document snapshot received:', docSnap.exists() ? 'exists' : 'does not exist');
@@ -137,10 +155,8 @@ const QueueComponent: React.FC<QueueProps> = ({ user, db, onQueueUpdate, onMatch
           setPlayerData(currentPlayerData);
           logMessage(`Player data updated: Status - ${currentPlayerData.status}`, 'system');
 
-          // Update overall queue status for parent components
           onQueueUpdate(currentPlayerData.inQueue || false);
 
-          // Handle opponent details
           if (currentPlayerData.currentOpponent) {
             if (!currentOpponentDetails || currentOpponentDetails.uid !== currentPlayerData.currentOpponent) {
               logMessage(`Fetching opponent details for UID: ${currentPlayerData.currentOpponent}`, 'system');
