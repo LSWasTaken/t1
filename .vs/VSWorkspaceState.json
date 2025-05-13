@@ -1,0 +1,12 @@
+{
+  "ExpandedNodes": [
+    "",
+    "\\src",
+    "\\src\\app",
+    "\\src\\app\\game",
+    "\\src\\app\\game\\components",
+    "\\src\\pages"
+  ],
+  "SelectedNode": "\\src\\app\\game\\components\\Queue.tsx",
+  "PreviewInSolutionExplorer": false
+}

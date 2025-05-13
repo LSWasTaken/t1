@@ -1,0 +1,120 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-cyber-black text-cyber-white;
+  }
+}
+
+@layer components {
+  .cyber-button {
+    @apply px-4 py-2 bg-cyber-gray text-cyber-white rounded-lg font-press-start 
+           hover:bg-cyber-hover transition-colors border border-cyber-accent;
+  }
+  
+  .cyber-input {
+    @apply px-4 py-2 bg-cyber-gray border-2 border-cyber-accent text-cyber-white 
+           rounded-lg font-press-start focus:outline-none focus:border-cyber-hover;
+  }
+  
+  .cyber-card {
+    @apply bg-cyber-gray border-2 border-cyber-accent rounded-lg p-4;
+  }
+}
+
+@layer utilities {
+  .font-press-start {
+    font-family: 'Press Start 2P', cursive;
+  }
+}
+
+@keyframes rainbow-glow {
+  0% {
+    box-shadow: 0 0 10px #ff0000;
+  }
+  16.666% {
+    box-shadow: 0 0 10px #ff7f00;
+  }
+  33.333% {
+    box-shadow: 0 0 10px #ffff00;
+  }
+  50% {
+    box-shadow: 0 0 10px #00ff00;
+  }
+  66.666% {
+    box-shadow: 0 0 10px #0000ff;
+  }
+  83.333% {
+    box-shadow: 0 0 10px #4b0082;
+  }
+  100% {
+    box-shadow: 0 0 10px #9400d3;
+  }
+}
+
+@keyframes rainbow {
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
+}
+
+.animate-rainbow {
+  background-size: 200% auto;
+  animation: rainbow 2s linear infinite;
+}
+
+@keyframes red-glow {
+  0%, 100% { box-shadow: 0 0 8px 2px #ff0000, 0 0 16px 4px #ff0000; }
+  50% { box-shadow: 0 0 24px 8px #ff3333, 0 0 32px 16px #ff3333; }
+}
+
+.red-glow {
+  animation: red-glow 1.2s infinite alternate;
+}
+
+:root {
+  --foreground-rgb: 255, 255, 255;
+  --background-start-rgb: 0, 0, 0;
+  --background-end-rgb: 0, 0, 0;
+  --cyber-black: #000000;
+  --cyber-gray: #1a1a1a;
+  --cyber-light-gray: #333333;
+  --cyber-lighter-gray: #4a4a4a;
+  --cyber-white: #ffffff;
+  --cyber-accent: #666666;
+  --cyber-hover: #808080;
+}
+
+body {
+  color: rgb(var(--foreground-rgb));
+  background: linear-gradient(
+    to bottom,
+    rgb(var(--background-start-rgb)),
+    rgb(var(--background-end-rgb))
+  );
+  min-height: 100vh;
+}
+
+.neon-text {
+  text-shadow: 0 0 5px #fff,
+               0 0 10px #fff,
+               0 0 20px #666,
+               0 0 30px #666,
+               0 0 40px #666;
+}
+
+.neon-border {
+  box-shadow: 0 0 5px #fff,
+              0 0 10px #fff,
+              0 0 20px #666,
+              0 0 30px #666,
+              0 0 40px #666;
+} 

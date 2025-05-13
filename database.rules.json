@@ -1,0 +1,22 @@
+{
+  "rules": {
+    ".read": "auth != null",
+    ".write": "auth != null",
+    "players": {
+      "$uid": {
+        ".read": true,
+        ".write": "auth != null && auth.uid === $uid"
+      }
+    },
+    "matches": {
+      ".read": true,
+      ".write": "auth != null"
+    },
+    "battles": {
+      "$battleId": {
+        ".read": true,
+        ".write": "auth != null && (data.child('player1Id').val() === auth.uid || data.child('player2Id').val() === auth.uid)"
+      }
+    }
+  }
+} 

@@ -1,0 +1,52 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Players collection rules
+    match /players/{playerId} {
+      allow read, list: if true;
+
+      allow create: if request.auth != null
+        && request.auth.uid == playerId
+        && request.resource.data.uid == request.auth.uid;
+
+      allow update: if request.auth != null
+        && (request.auth.uid == playerId
+            || resource.data.currentOpponent == request.auth.uid
+            || resource.data.challengeFrom == request.auth.uid)
+        && request.writeFields.hasOnly([
+             'power', 'wins', 'losses', 'lastMatch',
+             'username', 'inQueue', 'currentOpponent',
+             'status', 'challengeFrom', 'email'
+           ]);
+
+      allow delete: if false;
+    }
+
+    // Leaderboard collection rules
+    match /leaderboard/{playerId} {
+      allow read, list: if true;
+      allow create, update: if request.auth != null && request.auth.uid == playerId;
+      allow delete: if false;
+    }
+
+    // Matches collection rules
+    match /matches/{matchId} {
+      allow read: if true;
+      allow create, update: if request.auth != null;
+      allow delete: if false;
+    }
+
+    // Duel Requests collection rules
+    match /duelRequests/{requestId} {
+      allow read, create, update: if request.auth != null;
+      allow delete: if false;
+    }
+
+    // Battle History collection rules
+    match /battleHistory/{docId} {
+      allow read, create, update: if request.auth != null;
+      allow delete: if false;
+    }
+  }
+}
