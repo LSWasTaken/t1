@@ -77,6 +77,14 @@ const QueueComponent: React.FC<QueueProps> = ({ user, db, onQueueUpdate, onMatch
   const initializePlayerDocument = async (playerRef: any) => {
     try {
       console.log('Initializing player document for:', user.uid);
+      
+      // First check if document already exists
+      const existingDoc = await getDoc(playerRef);
+      if (existingDoc.exists()) {
+        console.log('Player document already exists, skipping initialization');
+        return;
+      }
+
       const initialData = {
         uid: user.uid,
         username: user.email?.split('@')[0] || 'Player',
@@ -92,7 +100,8 @@ const QueueComponent: React.FC<QueueProps> = ({ user, db, onQueueUpdate, onMatch
       };
       console.log('Initial player data:', initialData);
       
-      await setDoc(playerRef, initialData);
+      // Use setDoc with merge option to ensure we don't overwrite existing data
+      await setDoc(playerRef, initialData, { merge: true });
       console.log('Player document created successfully');
       logMessage('New player profile created.', 'success');
       
@@ -156,7 +165,7 @@ const QueueComponent: React.FC<QueueProps> = ({ user, db, onQueueUpdate, onMatch
       const playerRef = doc(db, 'players', user.uid);
       console.log('Setting up player listener for:', user.uid);
       
-      // First check if document exists
+      // First check if document exists and initialize if needed
       const docSnap = await getDoc(playerRef);
       if (!docSnap.exists()) {
         console.log('Player document does not exist, creating new document...');
@@ -167,7 +176,23 @@ const QueueComponent: React.FC<QueueProps> = ({ user, db, onQueueUpdate, onMatch
         console.log('Player document snapshot received:', docSnap.exists() ? 'exists' : 'does not exist');
         
         if (docSnap.exists()) {
-          const currentPlayerData = { uid: docSnap.id, ...docSnap.data() } as Player;
+          const data = docSnap.data() as {
+            username: string;
+            inQueue: boolean;
+            status: 'online' | 'in_game' | 'offline' | 'challenging';
+            currentOpponent: string | null;
+            challengeFrom: string | null;
+            lastMatch: FieldValue;
+          };
+          const currentPlayerData: Player = {
+            uid: docSnap.id,
+            username: data.username || '',
+            inQueue: data.inQueue || false,
+            status: data.status || 'online',
+            currentOpponent: data.currentOpponent || null,
+            challengeFrom: data.challengeFrom || null,
+            lastMatch: data.lastMatch
+          };
           setPlayerData(currentPlayerData);
           logMessage(`Player data updated: Status - ${currentPlayerData.status}`, 'system');
 
@@ -280,19 +305,25 @@ const QueueComponent: React.FC<QueueProps> = ({ user, db, onQueueUpdate, onMatch
     setIsProcessing(true); 
     setError(null);
     try {
-      // First update the player state
+      // First check if the player document exists
       const playerRef = doc(db, 'players', user.uid);
-      await updateDoc(playerRef, {
-        inQueue: false,
-        status: 'offline',
-        currentOpponent: null,
-        challengeFrom: null
-      }).catch(err => {
-        console.warn('Warning: Could not update player state:', err);
-        // Continue with sign out even if update fails
-      });
+      const playerDoc = await getDoc(playerRef);
       
-      logMessage('Player state updated.', 'success');
+      if (playerDoc.exists()) {
+        // Only update if document exists
+        await updateDoc(playerRef, {
+          inQueue: false,
+          status: 'offline',
+          currentOpponent: null,
+          challengeFrom: null
+        }).catch(err => {
+          console.warn('Warning: Could not update player state:', err);
+          // Continue with sign out even if update fails
+        });
+        logMessage('Player state updated.', 'success');
+      } else {
+        logMessage('No player document found, skipping state update.', 'info');
+      }
       
       // Clear local state before signing out
       setPlayerData(null);
@@ -309,8 +340,19 @@ const QueueComponent: React.FC<QueueProps> = ({ user, db, onQueueUpdate, onMatch
       logMessage('Signed out successfully.', 'success');
     } catch (err: any) {
       console.error('Sign out error:', err);
-      logMessage(`Error signing out: ${err.message}`, 'error');
-      setError(err.message);
+      let errorMessage = err.message;
+      
+      // Handle specific error cases
+      if (err.code === 'auth/too-many-requests') {
+        errorMessage = 'Too many attempts. Please wait a few minutes before trying again.';
+      } else if (err.code === 'auth/network-request-failed') {
+        errorMessage = 'Network error. Please check your internet connection.';
+      } else if (err.code === 'auth/unauthorized-domain') {
+        errorMessage = 'Authentication domain not authorized. Please contact support.';
+      }
+      
+      logMessage(`Error signing out: ${errorMessage}`, 'error');
+      setError(errorMessage);
     } finally { 
       setIsProcessing(false);
     }
@@ -346,10 +388,14 @@ const QueueComponent: React.FC<QueueProps> = ({ user, db, onQueueUpdate, onMatch
           transaction.set(playerRef, {
             uid: user.uid,
             username: user.email?.split('@')[0] || 'Player',
+            email: user.email || '',
             inQueue: false,
             status: 'online',
             currentOpponent: null,
             challengeFrom: null,
+            power: 0,
+            wins: 0,
+            losses: 0,
             lastMatch: serverTimestamp()
           });
         } else {
@@ -368,23 +414,19 @@ const QueueComponent: React.FC<QueueProps> = ({ user, db, onQueueUpdate, onMatch
       setError(null);
     } catch (err: any) {
       console.error('Detailed error:', err);
-      const errorMessage = err.message || 'Failed to reset state';
-      logMessage(`Error resetting state: ${errorMessage}`, 'error');
+      let errorMessage = err.message || 'Failed to reset state';
       
-      // More specific error handling
-      if (err.code === 'permission-denied') {
-        setError('Authentication error. Please try signing out and back in.');
-      } else if (err.code === 'not-found') {
-        setError('Player data not found. Creating new profile...');
-      } else if (err.code === 'invalid-argument') {
-        setError('Invalid data format. Please try again.');
-      } else if (err.code === 'unavailable') {
-        setError('Service temporarily unavailable. Please try again.');
-      } else if (err.code === 'resource-exhausted') {
-        setError('Too many requests. Please wait a moment and try again.');
-      } else {
-        setError(`Error: ${errorMessage}`);
+      // Handle specific error cases
+      if (err.code === 'auth/too-many-requests') {
+        errorMessage = 'Too many attempts. Please wait a few minutes before trying again.';
+      } else if (err.code === 'auth/network-request-failed') {
+        errorMessage = 'Network error. Please check your internet connection.';
+      } else if (err.code === 'auth/unauthorized-domain') {
+        errorMessage = 'Authentication domain not authorized. Please contact support.';
       }
+      
+      logMessage(`Error resetting state: ${errorMessage}`, 'error');
+      setError(errorMessage);
     } finally { 
       setIsProcessing(false);
     }
