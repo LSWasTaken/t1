@@ -100,6 +100,29 @@ const QueueComponent: React.FC<QueueProps> = ({ user, db, onQueueUpdate, onMatch
       }
     };
 
+    const initializePlayerDocument = async (playerRef: any) => {
+      try {
+        await setDoc(playerRef, {
+          uid: user.uid,
+          username: user.email?.split('@')[0] || 'Player',
+          email: user.email || '',
+          inQueue: false,
+          status: 'online',
+          currentOpponent: null,
+          challengeFrom: null,
+          power: 0,
+          wins: 0,
+          losses: 0,
+          lastMatch: serverTimestamp()
+        });
+        logMessage('New player profile created.', 'success');
+      } catch (err: any) {
+        console.error('Error creating player document:', err);
+        logMessage('Failed to create player profile. Please try again.', 'error');
+        setError('Failed to create player profile. Please try again.');
+      }
+    };
+
     const setupPlayerListener = async () => {
       if (!(await verifyAuth())) return;
 
@@ -149,23 +172,7 @@ const QueueComponent: React.FC<QueueProps> = ({ user, db, onQueueUpdate, onMatch
           }
         } else {
           console.log('Player document does not exist, creating new document...');
-          // Create the document if it doesn't exist
-          try {
-            await setDoc(playerRef, {
-              uid: user.uid,
-              username: user.email?.split('@')[0] || 'Player',
-              inQueue: false,
-              status: 'online',
-              currentOpponent: null,
-              challengeFrom: null,
-              lastMatch: serverTimestamp()
-            });
-            logMessage('New player profile created.', 'success');
-          } catch (err: any) {
-            console.error('Error creating player document:', err);
-            logMessage('Failed to create player profile. Please try again.', 'error');
-            setError('Failed to create player profile. Please try again.');
-          }
+          await initializePlayerDocument(playerRef);
         }
       }, (err) => {
         console.error('Player listener error:', err);
@@ -173,7 +180,7 @@ const QueueComponent: React.FC<QueueProps> = ({ user, db, onQueueUpdate, onMatch
         if (err.code === 'permission-denied') {
           setError('Authentication error. Please sign in again.');
         } else if (err.code === 'not-found') {
-          setError('Player data not found. Please try resetting your state.');
+          setError('Player data not found. Creating new profile...');
         } else if (err.code === 'invalid-argument') {
           setError('Invalid data format. Please try again.');
         } else if (err.code === 'unavailable') {
