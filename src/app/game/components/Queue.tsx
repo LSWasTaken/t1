@@ -99,7 +99,23 @@ const QueueComponent: React.FC<QueueProps> = ({ user, db, onQueueUpdate, onMatch
       // Force a refresh of the player data
       const docSnap = await getDoc(playerRef);
       if (docSnap.exists()) {
-        const playerData = { uid: docSnap.id, ...docSnap.data() } as Player;
+        const data = docSnap.data() as {
+          username: string;
+          inQueue: boolean;
+          status: 'online' | 'in_game' | 'offline' | 'challenging';
+          currentOpponent: string | null;
+          challengeFrom: string | null;
+          lastMatch: FieldValue;
+        };
+        const playerData: Player = {
+          uid: docSnap.id,
+          username: data.username || '',
+          inQueue: data.inQueue || false,
+          status: data.status || 'online',
+          currentOpponent: data.currentOpponent || null,
+          challengeFrom: data.challengeFrom || null,
+          lastMatch: data.lastMatch
+        };
         setPlayerData(playerData);
         logMessage('Player data loaded successfully.', 'success');
       }
@@ -549,6 +565,31 @@ const QueueComponent: React.FC<QueueProps> = ({ user, db, onQueueUpdate, onMatch
     } finally { setIsProcessing(false); }
   };
 
+  const handleCancelQueue = async () => {
+    if (!user || !playerData) {
+      logMessage('Player data not available.', 'error');
+      return;
+    }
+    logMessage('Cancelling queue...', 'action');
+    setIsProcessing(true);
+    setError(null);
+    try {
+      const playerRef = doc(db, 'players', user.uid);
+      await updateDoc(playerRef, {
+        inQueue: false,
+        status: 'online',
+        currentOpponent: null,
+        challengeFrom: null
+      });
+      logMessage('Successfully cancelled queue.', 'success');
+    } catch (err: any) {
+      console.error('Error cancelling queue:', err);
+      logMessage(`Error cancelling queue: ${err.message}`, 'error');
+      setError(err.message);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
 
   // --- Render Logic ---
   const canJoinQueue = playerData?.status === 'online' && !playerData.inQueue && !playerData.currentOpponent && !playerData.challengeFrom;
@@ -643,11 +684,11 @@ const QueueComponent: React.FC<QueueProps> = ({ user, db, onQueueUpdate, onMatch
           </>
         )}
 
-        {/* In Queue or Challenge Sent: Cancel Button */}
-        {(isInQueueSearching || isChallengeSent) && (
-          <button onClick={handleLeaveOrCancel} disabled={isProcessing || !user}
+        {/* In Queue: Cancel Button */}
+        {playerData?.inQueue && !playerData.currentOpponent && (
+          <button onClick={handleCancelQueue} disabled={isProcessing || !user}
             className="w-full px-4 py-2 bg-amber-700 text-neutral-100 rounded hover:bg-amber-600 font-semibold disabled:opacity-50">
-            {isProcessing ? 'Processing...' : (isChallengeSent ? 'Cancel Challenge Sent' : 'Cancel Queue Search')}
+            {isProcessing ? 'Processing...' : 'Cancel Queue'}
           </button>
         )}
 
