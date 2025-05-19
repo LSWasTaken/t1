@@ -55,6 +55,33 @@ export default function Queue() {
     }
   };
 
+  // Check for available matches
+  const checkForMatches = async () => {
+    if (!user || !inQueue) return;
+
+    try {
+      // Query for players in queue
+      const q = query(
+        collection(db, 'players'),
+        where('inQueue', '==', true),
+        where('uid', '!=', user.uid)
+      );
+
+      const querySnapshot = await getDocs(q);
+      const availablePlayers = querySnapshot.docs
+        .map(doc => ({ uid: doc.id, ...doc.data() } as Player))
+        .filter(player => player.uid !== user.uid);
+
+      if (availablePlayers.length > 0) {
+        const opponent = availablePlayers[0];
+        await startMatch(opponent.uid);
+      }
+    } catch (error) {
+      console.error('Error checking for matches:', error);
+      setError('Failed to find opponent');
+    }
+  };
+
   useEffect(() => {
     if (!user) return;
 
@@ -120,6 +147,17 @@ export default function Queue() {
     return () => clearInterval(timer);
   }, [searching]);
 
+  // Check for matches periodically while in queue
+  useEffect(() => {
+    let matchCheckInterval: NodeJS.Timeout;
+    if (inQueue && searching) {
+      matchCheckInterval = setInterval(checkForMatches, 2000); // Check every 2 seconds
+    }
+    return () => {
+      if (matchCheckInterval) clearInterval(matchCheckInterval);
+    };
+  }, [inQueue, searching, user]);
+
   const toggleQueue = async () => {
     if (!user) return;
 
@@ -129,19 +167,16 @@ export default function Queue() {
       setSearching(newQueueState);
 
       // Update queue status
-      await updateDoc(doc(db, 'players', user.uid), {
+      const playerRef = doc(db, 'players', user.uid);
+      await updateDoc(playerRef, {
         inQueue: newQueueState,
         lastActive: serverTimestamp(),
         status: newQueueState ? 'searching' : 'online'
       });
 
-      // If joining queue, check for available matches
+      // If joining queue, check for available matches immediately
       if (newQueueState) {
-        const availablePlayers = players.filter(p => p.inQueue && p.uid !== user.uid);
-        if (availablePlayers.length > 0) {
-          const opponent = availablePlayers[0];
-          await startMatch(opponent.uid);
-        }
+        await checkForMatches();
       }
     } catch (error) {
       console.error('Error toggling queue:', error);
@@ -157,7 +192,7 @@ export default function Queue() {
     try {
       // Create match document
       const matchRef = doc(collection(db, 'matches'));
-      await updateDoc(matchRef, {
+      await setDoc(matchRef, {
         player1Id: user.uid,
         player2Id: opponentId,
         status: 'in_progress',
@@ -168,18 +203,23 @@ export default function Queue() {
       });
 
       // Update both players' status
-      await updateDoc(doc(db, 'players', user.uid), {
-        inQueue: false,
-        currentMatch: matchRef.id,
-        status: 'in_match'
-      });
-      await updateDoc(doc(db, 'players', opponentId), {
-        inQueue: false,
-        currentMatch: matchRef.id,
-        status: 'in_match'
-      });
+      const batch = [
+        updateDoc(doc(db, 'players', user.uid), {
+          inQueue: false,
+          currentMatch: matchRef.id,
+          status: 'in_match'
+        }),
+        updateDoc(doc(db, 'players', opponentId), {
+          inQueue: false,
+          currentMatch: matchRef.id,
+          status: 'in_match'
+        })
+      ];
+
+      await Promise.all(batch);
 
       setSearching(false);
+      setInQueue(false);
       // Redirect to combat page
       router.push(`/combat?match=${matchRef.id}`);
     } catch (error) {
