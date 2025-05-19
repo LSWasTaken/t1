@@ -1,219 +1,249 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useState, useEffect } from 'react';
 import { useAuth } from '@/lib/auth';
-import { doc, getDoc } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
-import Combat from '@/app/game/components/Combat';
+import { doc, getDoc, updateDoc, onSnapshot } from 'firebase/firestore';
+import { useRouter, useSearchParams } from 'next/navigation';
 
 interface Player {
-  id: string;
+  uid: string;
   username: string;
-  power: number;
   avatar: string;
+  power: number;
 }
 
-interface UserData {
-  username: string;
-  power: number;
-  avatar: string;
+interface Move {
+  position: number;
+  player: string;
 }
 
-export default function CombatPage() {
+export default function Combat() {
+  const { user } = useAuth();
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { user } = useAuth();
-  const [opponent, setOpponent] = useState<Player | null>(null);
+  const matchId = searchParams.get('match');
+
+  const [board, setBoard] = useState<string[]>(Array(9).fill(''));
+  const [currentPlayer, setCurrentPlayer] = useState<string>('');
+  const [winner, setWinner] = useState<string | null>(null);
+  const [players, setPlayers] = useState<{ [key: string]: Player }>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [userData, setUserData] = useState<UserData | null>(null);
-  const [userHealth, setUserHealth] = useState(100);
-  const [opponentHealth, setOpponentHealth] = useState(100);
-  const [gameOver, setGameOver] = useState(false);
-  const [winner, setWinner] = useState<string | null>(null);
 
   useEffect(() => {
-    const fetchUserData = async () => {
-      if (!user) return;
-      
-      try {
-        const userDoc = await getDoc(doc(db, 'users', user.uid));
-        if (userDoc.exists()) {
-          const data = userDoc.data() as UserData;
-          setUserData(data);
-        }
-      } catch (err) {
-        console.error('Error fetching user data:', err);
-      }
-    };
-
-    fetchUserData();
-  }, [user]);
-
-  useEffect(() => {
-    const fetchOpponent = async () => {
-      try {
-        if (!searchParams) {
-          setError('Invalid URL parameters');
-          setLoading(false);
-          return;
-        }
-
-        const opponentId = searchParams.get('opponent');
-        if (!opponentId) {
-          setError('No opponent specified');
-          setLoading(false);
-          return;
-        }
-
-        const opponentDoc = await getDoc(doc(db, 'users', opponentId));
-        if (!opponentDoc.exists()) {
-          setError('Opponent not found');
-          setLoading(false);
-          return;
-        }
-
-        const opponentData = opponentDoc.data() as UserData;
-        setOpponent({
-          id: opponentDoc.id,
-          username: opponentData.username,
-          power: opponentData.power || 0,
-          avatar: opponentData.avatar || '/default-avatar.png'
-        });
-        setLoading(false);
-      } catch (err) {
-        console.error('Error fetching opponent:', err);
-        setError('Failed to load opponent data');
-        setLoading(false);
-      }
-    };
-
-    if (user) {
-      fetchOpponent();
+    if (!user || !matchId) {
+      router.push('/game');
+      return;
     }
-  }, [user, searchParams]);
 
-  const handleAttack = useCallback(() => {
-    if (!opponent || gameOver) return;
-
-    const damage = Math.floor(Math.random() * 20) + 1;
-    setOpponentHealth(prev => {
-      const newHealth = Math.max(prev - damage, 0);
-      if (newHealth === 0) {
-        setWinner(userData?.username || 'Player');
-        setGameOver(true);
+    // Listen for match updates
+    const matchRef = doc(db, 'matches', matchId);
+    const unsubscribe = onSnapshot(matchRef, async (doc) => {
+      if (!doc.exists()) {
+        setError('Match not found');
+        return;
       }
-      return newHealth;
+
+      const matchData = doc.data();
+      
+      // Fetch player data
+      const player1Doc = await getDoc(doc(db, 'players', matchData.player1Id));
+      const player2Doc = await getDoc(doc(db, 'players', matchData.player2Id));
+      
+      if (!player1Doc.exists() || !player2Doc.exists()) {
+        setError('Player data not found');
+        return;
+      }
+
+      setPlayers({
+        [matchData.player1Id]: {
+          uid: matchData.player1Id,
+          ...player1Doc.data()
+        },
+        [matchData.player2Id]: {
+          uid: matchData.player2Id,
+          ...player2Doc.data()
+        }
+      });
+
+      // Update board state
+      const moves = matchData.moves || [];
+      const newBoard = Array(9).fill('');
+      moves.forEach((move: Move) => {
+        newBoard[move.position] = move.player === matchData.player1Id ? 'X' : 'O';
+      });
+      setBoard(newBoard);
+
+      // Set current player
+      setCurrentPlayer(moves.length % 2 === 0 ? matchData.player1Id : matchData.player2Id);
+
+      // Check for winner
+      if (matchData.winner) {
+        setWinner(matchData.winner);
+      }
+
+      setLoading(false);
     });
 
-    const opponentDamage = Math.floor(Math.random() * 20) + 1;
-    setUserHealth(prev => {
-      const newHealth = Math.max(prev - opponentDamage, 0);
-      if (newHealth === 0) {
-        setWinner(opponent.username);
-        setGameOver(true);
-      }
-      return newHealth;
-    });
-  }, [opponent, userData, gameOver]);
+    return () => unsubscribe();
+  }, [user, matchId, router]);
 
-  if (!user) {
-    return (
-      <div className="min-h-screen bg-cyber-black text-cyber-white flex items-center justify-center">
-        <div className="text-center">
-          <h1 className="text-2xl font-press-start mb-4">Please log in to play</h1>
-          <button
-            onClick={() => router.push('/login')}
-            className="cyber-button"
-          >
-            Go to Login
-          </button>
-        </div>
-      </div>
-    );
-  }
+  const handleCellClick = async (index: number) => {
+    if (!user || !matchId || winner || board[index] !== '' || currentPlayer !== user.uid) {
+      return;
+    }
+
+    try {
+      const matchRef = doc(db, 'matches', matchId);
+      const matchDoc = await getDoc(matchRef);
+      
+      if (!matchDoc.exists()) return;
+      
+      const matchData = matchDoc.data();
+      const moves = matchData.moves || [];
+      
+      // Add new move
+      moves.push({
+        position: index,
+        player: user.uid
+      });
+
+      // Check for winner
+      const newBoard = [...board];
+      newBoard[index] = user.uid === matchData.player1Id ? 'X' : 'O';
+      
+      const winPatterns = [
+        [0, 1, 2], [3, 4, 5], [6, 7, 8], // Rows
+        [0, 3, 6], [1, 4, 7], [2, 5, 8], // Columns
+        [0, 4, 8], [2, 4, 6] // Diagonals
+      ];
+
+      let gameWinner = null;
+      for (const pattern of winPatterns) {
+        const [a, b, c] = pattern;
+        if (newBoard[a] && newBoard[a] === newBoard[b] && newBoard[a] === newBoard[c]) {
+          gameWinner = user.uid;
+          break;
+        }
+      }
+
+      // Update match document
+      await updateDoc(matchRef, {
+        moves,
+        winner: gameWinner,
+        status: gameWinner ? 'completed' : 'in_progress'
+      });
+
+      // If there's a winner, update player power
+      if (gameWinner) {
+        const winnerRef = doc(db, 'players', gameWinner);
+        const winnerDoc = await getDoc(winnerRef);
+        if (winnerDoc.exists()) {
+          const currentPower = winnerDoc.data().power || 0;
+          await updateDoc(winnerRef, {
+            power: currentPower + 1,
+            inQueue: false,
+            currentMatch: null
+          });
+        }
+      }
+
+    } catch (error) {
+      console.error('Error making move:', error);
+      setError('Failed to make move');
+    }
+  };
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-cyber-black text-cyber-white flex items-center justify-center">
-        <div className="text-center">
-          <h1 className="text-2xl font-press-start animate-pulse">Loading Battle...</h1>
-        </div>
+      <div className="text-center p-4">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-cyber-pink mx-auto"></div>
+        <p className="text-cyber-blue mt-2">Loading match...</p>
       </div>
     );
   }
 
   if (error) {
     return (
-      <div className="min-h-screen bg-cyber-black text-cyber-white flex items-center justify-center">
-        <div className="text-center">
-          <h1 className="text-2xl font-press-start text-cyber-red mb-4">{error}</h1>
-          <button
-            onClick={() => router.push('/game')}
-            className="cyber-button"
-          >
-            Return to Game
-          </button>
-        </div>
+      <div className="text-center p-4">
+        <p className="text-cyber-red">{error}</p>
+        <button
+          onClick={() => router.push('/game')}
+          className="mt-2 px-4 py-2 bg-cyber-pink text-white rounded-lg"
+        >
+          Return to Game
+        </button>
       </div>
     );
   }
 
+  const player1 = players[Object.keys(players)[0]];
+  const player2 = players[Object.keys(players)[1]];
+
   return (
-    <div className="min-h-screen bg-cyber-black text-cyber-white">
-      <div className="max-w-7xl mx-auto p-4">
-        <div className="flex justify-between items-center mb-8">
-          <button
-            onClick={() => router.push('/game')}
-            className="cyber-button"
-          >
-            Exit Battle
-          </button>
-          <h1 className="text-2xl font-press-start">Battle Arena</h1>
-          <div className="w-24"></div> {/* Spacer for balance */}
-        </div>
-
-        <div className="bg-cyber-gray rounded-lg p-8">
-          <div className="flex justify-between items-center mb-8">
-            <div className="text-center">
-              <img
-                src={userData?.avatar || '/default-avatar.png'}
-                alt={userData?.username || 'Player'}
-                className="w-24 h-24 rounded-full mx-auto mb-2"
-              />
-              <h2 className="font-press-start text-cyber-white">{userData?.username || 'Player'}</h2>
-              <p className="text-cyber-light-gray">Power: {userData?.power || 0}</p>
-              <h2 className="font-press-start text-cyber-white">Your Health: {userHealth}</h2>
-            </div>
-            <div className="text-4xl font-press-start text-cyber-white">VS</div>
-            <div className="text-center">
-              <img
-                src={opponent?.avatar || '/default-avatar.png'}
-                alt={opponent?.username || 'Opponent'}
-                className="w-24 h-24 rounded-full mx-auto mb-2"
-              />
-              <h2 className="font-press-start text-cyber-white">{opponent?.username || 'Opponent'}</h2>
-              <p className="text-cyber-light-gray">Power: {opponent?.power || 0}</p>
-              <h2 className="font-press-start text-cyber-white">Opponent Health: {opponentHealth}</h2>
-            </div>
+    <div className="max-w-2xl mx-auto p-4">
+      <div className="bg-cyber-dark rounded-lg p-6">
+        <div className="flex justify-between items-center mb-6">
+          <div className="text-center">
+            <img
+              src={player1?.avatar || '/default-avatar.svg'}
+              alt={player1?.username}
+              className="w-16 h-16 rounded-full border-2 border-cyber-pink mx-auto mb-2"
+            />
+            <p className="text-cyber-pink font-press-start">{player1?.username}</p>
+            <p className="text-cyber-blue">Power: {player1?.power}</p>
           </div>
-
-          <button onClick={handleAttack} className="cyber-button" disabled={gameOver}>
-            Attack
-          </button>
-
-          {gameOver && (
-            <div className="mt-4 text-center">
-              <h2 className="text-2xl font-press-start text-cyber-red">
-                {winner} Wins!
-              </h2>
-              <button onClick={() => router.push('/game')} className="cyber-button">
-                Return to Game
-              </button>
-            </div>
-          )}
+          
+          <div className="text-center">
+            <h2 className="text-2xl font-press-start text-cyber-green mb-2">VS</h2>
+            {winner && (
+              <p className="text-cyber-yellow">
+                {winner === user.uid ? 'You Won!' : 'You Lost!'}
+              </p>
+            )}
+          </div>
+          
+          <div className="text-center">
+            <img
+              src={player2?.avatar || '/default-avatar.svg'}
+              alt={player2?.username}
+              className="w-16 h-16 rounded-full border-2 border-cyber-pink mx-auto mb-2"
+            />
+            <p className="text-cyber-pink font-press-start">{player2?.username}</p>
+            <p className="text-cyber-blue">Power: {player2?.power}</p>
+          </div>
         </div>
+
+        <div className="grid grid-cols-3 gap-2 aspect-square">
+          {board.map((cell, index) => (
+            <button
+              key={index}
+              onClick={() => handleCellClick(index)}
+              disabled={cell !== '' || winner !== null || currentPlayer !== user.uid}
+              className={`
+                aspect-square bg-cyber-black rounded-lg flex items-center justify-center
+                text-4xl font-press-start transition-all duration-300
+                ${cell === 'X' ? 'text-cyber-pink' : cell === 'O' ? 'text-cyber-blue' : ''}
+                ${currentPlayer === user.uid && !cell && !winner ? 'hover:bg-cyber-dark' : ''}
+                ${currentPlayer !== user.uid || cell || winner ? 'cursor-not-allowed' : 'cursor-pointer'}
+              `}
+            >
+              {cell}
+            </button>
+          ))}
+        </div>
+
+        {winner && (
+          <div className="mt-6 text-center">
+            <button
+              onClick={() => router.push('/game')}
+              className="px-6 py-3 bg-cyber-pink text-white rounded-lg font-press-start"
+            >
+              Return to Game
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

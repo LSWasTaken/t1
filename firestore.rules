@@ -13,25 +13,24 @@ service cloud.firestore {
     
     function isOnline() {
       return isAuthenticated() && 
-        exists(/databases/$(database)/documents/players/$(request.auth.uid)) &&
-        get(/databases/$(database)/documents/players/$(request.auth.uid)).data.status == 'online';
+        exists(/databases/$(database)/documents/players/$(request.auth.uid));
     }
     
     function isInMatch() {
       return isAuthenticated() && 
         exists(/databases/$(database)/documents/players/$(request.auth.uid)) &&
-        get(/databases/$(database)/documents/players/$(request.auth.uid)).data.status == 'in_match';
+        get(/databases/$(database)/documents/players/$(request.auth.uid)).data.currentMatch != null;
     }
     
     function isInTanzaMatch() {
       return isAuthenticated() && 
         exists(/databases/$(database)/documents/players/$(request.auth.uid)) &&
-        get(/databases/$(database)/documents/players/$(request.auth.uid)).data.status == 'in_tanza_match';
+        get(/databases/$(database)/documents/players/$(request.auth.uid)).data.inTanzaMatch == true;
     }
 
     // Users collection
     match /users/{userId} {
-      allow read: if isAuthenticated() && (isOwner(userId) || isOnline());
+      allow read: if isAuthenticated();
       allow create: if isAuthenticated() && isOwner(userId);
       allow update: if isAuthenticated() && isOwner(userId);
       allow delete: if isAuthenticated() && isOwner(userId);
@@ -39,34 +38,42 @@ service cloud.firestore {
 
     // Players collection
     match /players/{playerId} {
-      allow read: if isAuthenticated() && (isOwner(playerId) || isOnline());
-      allow write: if isAuthenticated() && (isOwner(playerId) || isInMatch() || isInTanzaMatch());
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && isOwner(playerId);
+      allow update: if isAuthenticated() && (
+        isOwner(playerId) || 
+        (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['inQueue', 'lastActive', 'currentMatch', 'power']))
+      );
+      allow delete: if isAuthenticated() && isOwner(playerId);
     }
 
     // Matches collection
     match /matches/{matchId} {
-      allow read: if isAuthenticated() && (
-        resource.data.player1Id == request.auth.uid ||
-        resource.data.player2Id == request.auth.uid
-      );
+      allow read: if isAuthenticated();
       allow create: if isAuthenticated();
       allow update: if isAuthenticated() && (
         resource.data.player1Id == request.auth.uid ||
-        resource.data.player2Id == request.auth.uid
+        resource.data.player2Id == request.auth.uid ||
+        !('player1Id' in resource.data) ||
+        !('player2Id' in resource.data)
       );
     }
 
     // Tanza matches collection
     match /tanza_matches/{matchId} {
-      allow read: if isAuthenticated() && (
-        resource.data.player1Id == request.auth.uid ||
-        resource.data.player2Id == request.auth.uid
-      );
+      allow read: if isAuthenticated();
       allow create: if isAuthenticated();
       allow update: if isAuthenticated() && (
         resource.data.player1Id == request.auth.uid ||
-        resource.data.player2Id == request.auth.uid
+        resource.data.player2Id == request.auth.uid ||
+        !('player1Id' in resource.data) ||
+        !('player2Id' in resource.data)
       );
+    }
+
+    // Allow connection state updates
+    match /_connections/{connectionId} {
+      allow read, write: if isAuthenticated();
     }
   }
 }
