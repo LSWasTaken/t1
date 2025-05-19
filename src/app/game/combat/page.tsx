@@ -21,11 +21,16 @@ interface UserData {
 }
 
 interface MatchData {
+  player1Id?: string;
+  player2Id?: string;
   player1Score: number;
   player2Score: number;
+  board: string[];
+  currentTurn: string;
   active: boolean;
   finished: boolean;
   winner: string | null;
+  powerGain?: number;
 }
 
 export default function CombatPage() {
