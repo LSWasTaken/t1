@@ -5,6 +5,7 @@ import { useAuth } from '@/lib/auth';
 import { db } from '@/lib/firebase';
 import { doc, getDoc, updateDoc, onSnapshot, DocumentData } from 'firebase/firestore';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { motion, AnimatePresence } from 'framer-motion';
 
 interface Player {
   uid: string;
@@ -18,6 +19,18 @@ interface Move {
   player: string;
 }
 
+const cellVariants = {
+  initial: { scale: 0.8, opacity: 0 },
+  animate: { scale: 1, opacity: 1 },
+  hover: { scale: 1.05, backgroundColor: 'rgba(255, 0, 255, 0.1)' }
+};
+
+const playerVariants = {
+  initial: { x: -50, opacity: 0 },
+  animate: { x: 0, opacity: 1 },
+  exit: { x: 50, opacity: 0 }
+};
+
 export default function Combat() {
   const { user } = useAuth();
   const router = useRouter();
@@ -30,6 +43,7 @@ export default function Combat() {
   const [players, setPlayers] = useState<{ [key: string]: Player }>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [lastMove, setLastMove] = useState<number | null>(null);
 
   useEffect(() => {
     if (!user || !matchId) {
@@ -81,6 +95,11 @@ export default function Combat() {
 
         // Set current player
         setCurrentPlayer(moves.length % 2 === 0 ? matchData.player1Id : matchData.player2Id);
+
+        // Update last move
+        if (moves.length > 0) {
+          setLastMove(moves[moves.length - 1].position);
+        }
 
         // Check for winner
         if (matchData.winner) {
@@ -140,7 +159,8 @@ export default function Combat() {
       await updateDoc(matchRef, {
         moves,
         winner: gameWinner,
-        status: gameWinner ? 'completed' : 'in_progress'
+        status: gameWinner ? 'completed' : 'in_progress',
+        lastMove: index
       });
 
       // If there's a winner, update player power
@@ -152,7 +172,8 @@ export default function Combat() {
           await updateDoc(winnerRef, {
             power: currentPower + 1,
             inQueue: false,
-            currentMatch: null
+            currentMatch: null,
+            status: 'online'
           });
         }
       }
@@ -174,15 +195,19 @@ export default function Combat() {
 
   if (error) {
     return (
-      <div className="text-center p-4">
+      <motion.div 
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="text-center p-4"
+      >
         <p className="text-cyber-red">{error}</p>
         <button
           onClick={() => router.push('/game')}
-          className="mt-2 px-4 py-2 bg-cyber-pink text-white rounded-lg"
+          className="mt-2 px-4 py-2 bg-cyber-pink text-white rounded-lg hover:bg-pink-700 transition-colors"
         >
           Return to Game
         </button>
-      </div>
+      </motion.div>
     );
   }
 
@@ -191,82 +216,129 @@ export default function Combat() {
 
   if (!user) {
     return (
-      <div className="text-center p-4">
+      <motion.div 
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        className="text-center p-4"
+      >
         <p className="text-cyber-red">Please log in to play</p>
         <button
           onClick={() => router.push('/login')}
-          className="mt-2 px-4 py-2 bg-cyber-pink text-white rounded-lg"
+          className="mt-2 px-4 py-2 bg-cyber-pink text-white rounded-lg hover:bg-pink-700 transition-colors"
         >
           Go to Login
         </button>
-      </div>
+      </motion.div>
     );
   }
 
   return (
     <div className="max-w-2xl mx-auto p-4">
-      <div className="bg-cyber-dark rounded-lg p-6">
+      <motion.div 
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="bg-cyber-dark rounded-lg p-6"
+      >
         <div className="flex justify-between items-center mb-6">
-          <div className="text-center">
-            <img
-              src={player1?.avatar || '/default-avatar.svg'}
-              alt={player1?.username}
-              className="w-16 h-16 rounded-full border-2 border-cyber-pink mx-auto mb-2"
-            />
+          <motion.div 
+            variants={playerVariants}
+            initial="initial"
+            animate="animate"
+            exit="exit"
+            className="text-center"
+          >
+            <div className="relative">
+              <img
+                src={player1?.avatar || '/default-avatar.svg'}
+                alt={player1?.username}
+                className="w-16 h-16 rounded-full border-2 border-cyber-pink mx-auto mb-2"
+              />
+              {currentPlayer === player1?.uid && !winner && (
+                <div className="absolute -top-2 -right-2 w-4 h-4 bg-cyber-yellow rounded-full animate-pulse"></div>
+              )}
+            </div>
             <p className="text-cyber-pink font-press-start">{player1?.username}</p>
             <p className="text-cyber-blue">Power: {player1?.power}</p>
-          </div>
+          </motion.div>
           
-          <div className="text-center">
+          <motion.div 
+            initial={{ scale: 0 }}
+            animate={{ scale: 1 }}
+            className="text-center"
+          >
             <h2 className="text-2xl font-press-start text-cyber-green mb-2">VS</h2>
             {winner && (
-              <p className="text-cyber-yellow">
+              <motion.p 
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="text-cyber-yellow"
+              >
                 {winner === user.uid ? 'You Won!' : 'You Lost!'}
-              </p>
+              </motion.p>
             )}
-          </div>
+          </motion.div>
           
-          <div className="text-center">
-            <img
-              src={player2?.avatar || '/default-avatar.svg'}
-              alt={player2?.username}
-              className="w-16 h-16 rounded-full border-2 border-cyber-pink mx-auto mb-2"
-            />
+          <motion.div 
+            variants={playerVariants}
+            initial="initial"
+            animate="animate"
+            exit="exit"
+            className="text-center"
+          >
+            <div className="relative">
+              <img
+                src={player2?.avatar || '/default-avatar.svg'}
+                alt={player2?.username}
+                className="w-16 h-16 rounded-full border-2 border-cyber-pink mx-auto mb-2"
+              />
+              {currentPlayer === player2?.uid && !winner && (
+                <div className="absolute -top-2 -right-2 w-4 h-4 bg-cyber-yellow rounded-full animate-pulse"></div>
+              )}
+            </div>
             <p className="text-cyber-pink font-press-start">{player2?.username}</p>
             <p className="text-cyber-blue">Power: {player2?.power}</p>
-          </div>
+          </motion.div>
         </div>
 
         <div className="grid grid-cols-3 gap-2 aspect-square">
           {board.map((cell, index) => (
-            <button
+            <motion.button
               key={index}
               onClick={() => handleCellClick(index)}
               disabled={cell !== '' || winner !== null || currentPlayer !== user.uid}
+              variants={cellVariants}
+              initial="initial"
+              animate="animate"
+              whileHover={!cell && !winner && currentPlayer === user.uid ? "hover" : undefined}
               className={`
                 aspect-square bg-cyber-black rounded-lg flex items-center justify-center
                 text-4xl font-press-start transition-all duration-300
                 ${cell === 'X' ? 'text-cyber-pink' : cell === 'O' ? 'text-cyber-blue' : ''}
                 ${currentPlayer === user.uid && !cell && !winner ? 'hover:bg-cyber-dark' : ''}
                 ${currentPlayer !== user.uid || cell || winner ? 'cursor-not-allowed' : 'cursor-pointer'}
+                ${lastMove === index ? 'ring-2 ring-cyber-yellow' : ''}
               `}
             >
               {cell}
-            </button>
+            </motion.button>
           ))}
         </div>
 
         {winner && (
-          <div className="mt-6 text-center">
+          <motion.div 
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="mt-6 text-center"
+          >
             <button
               onClick={() => router.push('/game')}
-              className="px-6 py-3 bg-cyber-pink text-white rounded-lg font-press-start"
+              className="px-6 py-3 bg-cyber-pink text-white rounded-lg font-press-start hover:bg-pink-700 transition-colors"
             >
               Return to Game
             </button>
-          </div>
+          </motion.div>
         )}
-      </div>
+      </motion.div>
     </div>
   );
 } 

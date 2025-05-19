@@ -3,8 +3,9 @@
 import { useState, useEffect } from 'react';
 import { useAuth } from '@/lib/auth';
 import { db } from '@/lib/firebase';
-import { collection, query, where, orderBy, limit, getDocs, doc, updateDoc, onSnapshot } from 'firebase/firestore';
+import { collection, query, where, orderBy, limit, getDocs, doc, updateDoc, onSnapshot, serverTimestamp } from 'firebase/firestore';
 import { useRouter } from 'next/navigation';
+import { motion, AnimatePresence } from 'framer-motion';
 
 interface Player {
   uid: string;
@@ -13,6 +14,7 @@ interface Player {
   power: number;
   inQueue: boolean;
   lastActive: any;
+  status?: string;
 }
 
 export default function Queue() {
@@ -22,6 +24,8 @@ export default function Queue() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [inQueue, setInQueue] = useState(false);
+  const [searching, setSearching] = useState(false);
+  const [queueTime, setQueueTime] = useState(0);
 
   useEffect(() => {
     if (!user) return;
@@ -30,8 +34,9 @@ export default function Queue() {
     const updateLastActive = async () => {
       try {
         await updateDoc(doc(db, 'players', user.uid), {
-          lastActive: new Date(),
-          inQueue: inQueue
+          lastActive: serverTimestamp(),
+          inQueue: inQueue,
+          status: inQueue ? 'searching' : 'online'
         });
       } catch (error) {
         console.error('Error updating last active:', error);
@@ -56,12 +61,25 @@ export default function Queue() {
       setPlayers(onlinePlayers);
       setLoading(false);
     });
-
+    
     return () => {
       clearInterval(interval);
       unsubscribe();
     };
   }, [user, inQueue]);
+
+  // Queue timer effect
+  useEffect(() => {
+    let timer: NodeJS.Timeout;
+    if (searching) {
+      timer = setInterval(() => {
+        setQueueTime(prev => prev + 1);
+      }, 1000);
+    } else {
+      setQueueTime(0);
+    }
+    return () => clearInterval(timer);
+  }, [searching]);
 
   const toggleQueue = async () => {
     if (!user) return;
@@ -69,11 +87,13 @@ export default function Queue() {
     try {
       const newQueueState = !inQueue;
       setInQueue(newQueueState);
+      setSearching(newQueueState);
 
       // Update queue status
       await updateDoc(doc(db, 'players', user.uid), {
         inQueue: newQueueState,
-        lastActive: new Date()
+        lastActive: serverTimestamp(),
+        status: newQueueState ? 'searching' : 'online'
       });
 
       // If joining queue, check for available matches
@@ -87,6 +107,8 @@ export default function Queue() {
     } catch (error) {
       console.error('Error toggling queue:', error);
       setError('Failed to update queue status');
+      setInQueue(false);
+      setSearching(false);
     }
   };
 
@@ -100,27 +122,39 @@ export default function Queue() {
         player1Id: user.uid,
         player2Id: opponentId,
         status: 'in_progress',
-        createdAt: new Date(),
+        createdAt: serverTimestamp(),
         winner: null,
-        moves: []
+        moves: [],
+        lastMove: null
       });
 
       // Update both players' status
       await updateDoc(doc(db, 'players', user.uid), {
         inQueue: false,
-        currentMatch: matchRef.id
+        currentMatch: matchRef.id,
+        status: 'in_match'
       });
       await updateDoc(doc(db, 'players', opponentId), {
         inQueue: false,
-        currentMatch: matchRef.id
+        currentMatch: matchRef.id,
+        status: 'in_match'
       });
 
+      setSearching(false);
       // Redirect to combat page
       router.push(`/combat?match=${matchRef.id}`);
     } catch (error) {
       console.error('Error starting match:', error);
       setError('Failed to start match');
+      setInQueue(false);
+      setSearching(false);
     }
+  };
+
+  const formatTime = (seconds: number) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
   if (loading) {
@@ -134,66 +168,106 @@ export default function Queue() {
 
   if (error) {
     return (
-      <div className="text-center p-4">
+      <motion.div 
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="text-center p-4"
+      >
         <p className="text-cyber-red">{error}</p>
         <button
-          onClick={() => setError(null)}
-          className="mt-2 px-4 py-2 bg-cyber-pink text-white rounded-lg"
+          onClick={() => {
+            setError(null);
+            setInQueue(false);
+            setSearching(false);
+          }}
+          className="mt-2 px-4 py-2 bg-cyber-pink text-white rounded-lg hover:bg-pink-700 transition-colors"
         >
           Retry
         </button>
-      </div>
+      </motion.div>
     );
   }
 
   return (
     <div className="space-y-6">
-      <div className="bg-cyber-dark rounded-lg p-6">
+      <motion.div 
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="bg-cyber-dark rounded-lg p-6"
+      >
         <h2 className="text-2xl font-press-start text-cyber-pink mb-4">Matchmaking</h2>
         
-        <button
-          onClick={toggleQueue}
-          className={`w-full px-6 py-3 rounded-lg font-press-start transition-all duration-300 ${
-            inQueue
-              ? 'bg-cyber-red text-white hover:bg-red-700'
-              : 'bg-cyber-pink text-white hover:bg-pink-700'
-          }`}
-        >
-          {inQueue ? 'Leave Queue' : 'Join Queue'}
-        </button>
+        <div className="relative">
+          <button
+            onClick={toggleQueue}
+            disabled={searching}
+            className={`w-full px-6 py-3 rounded-lg font-press-start transition-all duration-300 ${
+              inQueue
+                ? 'bg-cyber-red text-white hover:bg-red-700'
+                : 'bg-cyber-pink text-white hover:bg-pink-700'
+            } ${searching ? 'opacity-50 cursor-not-allowed' : ''}`}
+          >
+            {searching ? (
+              <div className="flex items-center justify-center space-x-2">
+                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                <span>Searching... {formatTime(queueTime)}</span>
+              </div>
+            ) : (
+              inQueue ? 'Leave Queue' : 'Join Queue'
+            )}
+          </button>
+        </div>
 
         <div className="mt-6">
           <h3 className="text-xl font-press-start text-cyber-blue mb-4">Online Players</h3>
           <div className="space-y-2">
-            {players.map((player) => (
-              <div
-                key={player.uid}
-                className="flex items-center justify-between p-3 bg-cyber-black rounded-lg"
-              >
-                <div className="flex items-center space-x-3">
-                  <img
-                    src={player.avatar || '/default-avatar.svg'}
-                    alt={player.username}
-                    className="w-10 h-10 rounded-full border-2 border-cyber-pink"
-                  />
-                  <div>
-                    <p className="text-cyber-pink font-press-start">{player.username}</p>
-                    <p className="text-cyber-blue text-sm">Power: {player.power}</p>
+            <AnimatePresence>
+              {players.map((player) => (
+                <motion.div
+                  key={player.uid}
+                  initial={{ opacity: 0, x: -20 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: 20 }}
+                  className="flex items-center justify-between p-3 bg-cyber-black rounded-lg hover:bg-cyber-dark transition-colors"
+                >
+                  <div className="flex items-center space-x-3">
+                    <div className="relative">
+                      <img
+                        src={player.avatar || '/default-avatar.svg'}
+                        alt={player.username}
+                        className="w-10 h-10 rounded-full border-2 border-cyber-pink"
+                      />
+                      <div className={`absolute -bottom-1 -right-1 w-3 h-3 rounded-full ${
+                        player.status === 'searching' ? 'bg-cyber-yellow animate-pulse' :
+                        player.status === 'in_match' ? 'bg-cyber-red' :
+                        'bg-cyber-green'
+                      }`}></div>
+                    </div>
+                    <div>
+                      <p className="text-cyber-pink font-press-start">{player.username}</p>
+                      <p className="text-cyber-blue text-sm">Power: {player.power}</p>
+                    </div>
                   </div>
-                </div>
-                {player.inQueue && (
-                  <span className="px-2 py-1 bg-cyber-green text-white text-sm rounded">
-                    In Queue
-                  </span>
-                )}
-              </div>
-            ))}
+                  {player.inQueue && (
+                    <span className="px-2 py-1 bg-cyber-green text-white text-sm rounded animate-pulse">
+                      In Queue
+                    </span>
+                  )}
+                </motion.div>
+              ))}
+            </AnimatePresence>
             {players.length === 0 && (
-              <p className="text-cyber-blue text-center">No players online</p>
+              <motion.p 
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                className="text-cyber-blue text-center"
+              >
+                No players online
+              </motion.p>
             )}
           </div>
         </div>
-      </div>
+      </motion.div>
     </div>
   );
 }
