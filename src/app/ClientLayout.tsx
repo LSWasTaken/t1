@@ -5,7 +5,7 @@ import { useAuth } from '@/lib/auth';
 import { Suspense } from 'react';
 
 function Navigation() {
-  const { user, signOut } = useAuth();
+  const { user, logout } = useAuth();
 
   return (
     <nav className="bg-cyber-dark p-4">
@@ -35,7 +35,7 @@ function Navigation() {
                 Game
               </Link>
               <button
-                onClick={() => signOut()}
+                onClick={() => logout()}
                 className="px-4 py-2 bg-cyber-black border-2 border-cyber-red text-cyber-red hover:bg-cyber-red hover:text-cyber-black transition-all duration-300 font-press-start text-sm"
               >
                 Sign Out
