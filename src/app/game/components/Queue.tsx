@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react';
 import { useAuth } from '@/lib/auth';
 import { db } from '@/lib/firebase';
-import { collection, query, where, orderBy, limit, getDocs, doc, updateDoc, onSnapshot, serverTimestamp } from 'firebase/firestore';
+import { collection, query, where, orderBy, limit, getDocs, doc, updateDoc, onSnapshot, serverTimestamp, setDoc, getDoc } from 'firebase/firestore';
 import { useRouter } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -17,6 +17,8 @@ interface Player {
   status?: string;
 }
 
+const DEFAULT_AVATAR = '/default-avatar.svg';
+
 export default function Queue() {
   const { user } = useAuth();
   const router = useRouter();
@@ -27,17 +29,54 @@ export default function Queue() {
   const [searching, setSearching] = useState(false);
   const [queueTime, setQueueTime] = useState(0);
 
+  // Create or update player document
+  const ensurePlayerDocument = async () => {
+    if (!user) return;
+
+    try {
+      const playerRef = doc(db, 'players', user.uid);
+      const playerDoc = await getDoc(playerRef);
+
+      if (!playerDoc.exists()) {
+        // Create new player document
+        await setDoc(playerRef, {
+          uid: user.uid,
+          username: user.displayName || 'Anonymous',
+          avatar: user.photoURL || DEFAULT_AVATAR,
+          power: 0,
+          inQueue: false,
+          lastActive: serverTimestamp(),
+          status: 'online'
+        });
+      }
+    } catch (error) {
+      console.error('Error ensuring player document:', error);
+      setError('Failed to initialize player data');
+    }
+  };
+
   useEffect(() => {
     if (!user) return;
+
+    // Ensure player document exists
+    ensurePlayerDocument();
 
     // Update user's last active timestamp
     const updateLastActive = async () => {
       try {
-        await updateDoc(doc(db, 'players', user.uid), {
-          lastActive: serverTimestamp(),
-          inQueue: inQueue,
-          status: inQueue ? 'searching' : 'online'
-        });
+        const playerRef = doc(db, 'players', user.uid);
+        const playerDoc = await getDoc(playerRef);
+        
+        if (playerDoc.exists()) {
+          await updateDoc(playerRef, {
+            lastActive: serverTimestamp(),
+            inQueue: inQueue,
+            status: inQueue ? 'searching' : 'online'
+          });
+        } else {
+          // If document doesn't exist, create it
+          await ensurePlayerDocument();
+        }
       } catch (error) {
         console.error('Error updating last active:', error);
       }
@@ -233,7 +272,7 @@ export default function Queue() {
                   <div className="flex items-center space-x-3">
                     <div className="relative">
                       <img
-                        src={player.avatar || '/default-avatar.svg'}
+                        src={player.avatar || DEFAULT_AVATAR}
                         alt={player.username}
                         className="w-10 h-10 rounded-full border-2 border-cyber-pink"
                       />

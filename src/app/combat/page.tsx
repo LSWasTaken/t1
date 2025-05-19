@@ -19,6 +19,8 @@ interface Move {
   player: string;
 }
 
+const DEFAULT_AVATAR = '/default-avatar.svg';
+
 const cellVariants = {
   initial: { scale: 0.8, opacity: 0 },
   animate: { scale: 1, opacity: 1 },
@@ -63,8 +65,10 @@ export default function Combat() {
       
       try {
         // Fetch player data
-        const player1Doc = await getDoc(doc(db, 'players', matchData.player1Id));
-        const player2Doc = await getDoc(doc(db, 'players', matchData.player2Id));
+        const player1Ref = doc(db, 'players', matchData.player1Id);
+        const player2Ref = doc(db, 'players', matchData.player2Id);
+        const player1Doc = await getDoc(player1Ref);
+        const player2Doc = await getDoc(player2Ref);
         
         if (!player1Doc.exists() || !player2Doc.exists()) {
           setError('Player data not found');
@@ -74,12 +78,21 @@ export default function Combat() {
         const player1Data = player1Doc.data() as Player;
         const player2Data = player2Doc.data() as Player;
 
+        // Ensure both players have required fields
+        const defaultPlayerData = {
+          username: 'Anonymous',
+          avatar: DEFAULT_AVATAR,
+          power: 0
+        };
+
         setPlayers({
           [matchData.player1Id]: {
+            ...defaultPlayerData,
             ...player1Data,
             uid: matchData.player1Id
           },
           [matchData.player2Id]: {
+            ...defaultPlayerData,
             ...player2Data,
             uid: matchData.player2Id
           }
