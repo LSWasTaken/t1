@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react';
 import { useAuth } from '@/lib/auth';
 import { db } from '@/lib/firebase';
-import { doc, getDoc, updateDoc, onSnapshot } from 'firebase/firestore';
+import { doc, getDoc, updateDoc, onSnapshot, DocumentData } from 'firebase/firestore';
 import { useRouter, useSearchParams } from 'next/navigation';
 
 interface Player {
@@ -22,7 +22,7 @@ export default function Combat() {
   const { user } = useAuth();
   const router = useRouter();
   const searchParams = useSearchParams();
-  const matchId = searchParams.get('match');
+  const matchId = searchParams?.get('match') || '';
 
   const [board, setBoard] = useState<string[]>(Array(9).fill(''));
   const [currentPlayer, setCurrentPlayer] = useState<string>('');
@@ -39,51 +39,59 @@ export default function Combat() {
 
     // Listen for match updates
     const matchRef = doc(db, 'matches', matchId);
-    const unsubscribe = onSnapshot(matchRef, async (doc) => {
-      if (!doc.exists()) {
+    const unsubscribe = onSnapshot(matchRef, async (matchDoc) => {
+      if (!matchDoc.exists()) {
         setError('Match not found');
         return;
       }
 
-      const matchData = doc.data();
+      const matchData = matchDoc.data();
       
-      // Fetch player data
-      const player1Doc = await getDoc(doc(db, 'players', matchData.player1Id));
-      const player2Doc = await getDoc(doc(db, 'players', matchData.player2Id));
-      
-      if (!player1Doc.exists() || !player2Doc.exists()) {
-        setError('Player data not found');
-        return;
-      }
-
-      setPlayers({
-        [matchData.player1Id]: {
-          uid: matchData.player1Id,
-          ...player1Doc.data()
-        },
-        [matchData.player2Id]: {
-          uid: matchData.player2Id,
-          ...player2Doc.data()
+      try {
+        // Fetch player data
+        const player1Doc = await getDoc(doc(db, 'players', matchData.player1Id));
+        const player2Doc = await getDoc(doc(db, 'players', matchData.player2Id));
+        
+        if (!player1Doc.exists() || !player2Doc.exists()) {
+          setError('Player data not found');
+          return;
         }
-      });
 
-      // Update board state
-      const moves = matchData.moves || [];
-      const newBoard = Array(9).fill('');
-      moves.forEach((move: Move) => {
-        newBoard[move.position] = move.player === matchData.player1Id ? 'X' : 'O';
-      });
-      setBoard(newBoard);
+        const player1Data = player1Doc.data() as Player;
+        const player2Data = player2Doc.data() as Player;
 
-      // Set current player
-      setCurrentPlayer(moves.length % 2 === 0 ? matchData.player1Id : matchData.player2Id);
+        setPlayers({
+          [matchData.player1Id]: {
+            ...player1Data,
+            uid: matchData.player1Id
+          },
+          [matchData.player2Id]: {
+            ...player2Data,
+            uid: matchData.player2Id
+          }
+        });
 
-      // Check for winner
-      if (matchData.winner) {
-        setWinner(matchData.winner);
+        // Update board state
+        const moves = matchData.moves || [];
+        const newBoard = Array(9).fill('');
+        moves.forEach((move: Move) => {
+          newBoard[move.position] = move.player === matchData.player1Id ? 'X' : 'O';
+        });
+        setBoard(newBoard);
+
+        // Set current player
+        setCurrentPlayer(moves.length % 2 === 0 ? matchData.player1Id : matchData.player2Id);
+
+        // Check for winner
+        if (matchData.winner) {
+          setWinner(matchData.winner);
+        }
+
+        setLoading(false);
+      } catch (error) {
+        console.error('Error fetching player data:', error);
+        setError('Failed to load player data');
       }
-
-      setLoading(false);
     });
 
     return () => unsubscribe();
@@ -180,6 +188,20 @@ export default function Combat() {
 
   const player1 = players[Object.keys(players)[0]];
   const player2 = players[Object.keys(players)[1]];
+
+  if (!user) {
+    return (
+      <div className="text-center p-4">
+        <p className="text-cyber-red">Please log in to play</p>
+        <button
+          onClick={() => router.push('/login')}
+          className="mt-2 px-4 py-2 bg-cyber-pink text-white rounded-lg"
+        >
+          Go to Login
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="max-w-2xl mx-auto p-4">
