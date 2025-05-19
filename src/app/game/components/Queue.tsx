@@ -1,9 +1,9 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useAuth } from '@/lib/auth';
 import { db } from '@/lib/firebase';
-import { collection, query, where, orderBy, limit, getDocs, doc, updateDoc, onSnapshot, serverTimestamp, setDoc, getDoc, runTransaction, writeBatch } from 'firebase/firestore';
+import { collection, query, where, orderBy, limit, getDocs, doc, updateDoc, onSnapshot, serverTimestamp, setDoc, getDoc, runTransaction, writeBatch, Timestamp } from 'firebase/firestore';
 import { useRouter } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -17,6 +17,8 @@ interface Player {
   status?: string;
   currentMatch?: string | null;
   lastQueueUpdate?: any;
+  region?: string;
+  skillRating?: number;
 }
 
 const DEFAULT_AVATAR = '/default-avatar.svg';
@@ -24,6 +26,8 @@ const MIN_QUEUE_TIME = 60; // Minimum queue time in seconds
 const MAX_QUEUE_TIME = 300; // Maximum queue time in seconds
 const QUEUE_CHECK_INTERVAL = 5000; // Check for matches every 5 seconds
 const LAST_ACTIVE_THRESHOLD = 30000; // 30 seconds
+const MAX_SKILL_RATING_DIFF = 500; // Maximum skill rating difference for matchmaking
+const MAX_RETRY_ATTEMPTS = 3; // Maximum number of retry attempts for match creation
 
 export default function Queue() {
   const { user } = useAuth();
@@ -36,8 +40,38 @@ export default function Queue() {
   const [queueTime, setQueueTime] = useState(0);
   const [queueStartTime, setQueueStartTime] = useState<number | null>(null);
   const [matchmakingStatus, setMatchmakingStatus] = useState<string>('');
+  const [retryCount, setRetryCount] = useState(0);
   const lastUpdateRef = useRef<number>(0);
   const queueTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const matchmakingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Memoized query for better performance
+  const queueQuery = useMemo(() => {
+    return query(
+      collection(db, 'players'),
+      where('inQueue', '==', true),
+      where('status', '==', 'searching'),
+      where('lastQueueUpdate', '>', new Date(Date.now() - LAST_ACTIVE_THRESHOLD)),
+      orderBy('lastQueueUpdate', 'desc')
+    );
+  }, []);
+
+  // Cleanup function
+  const cleanup = useCallback(() => {
+    if (queueTimeoutRef.current) {
+      clearTimeout(queueTimeoutRef.current);
+      queueTimeoutRef.current = null;
+    }
+    if (matchmakingTimeoutRef.current) {
+      clearTimeout(matchmakingTimeoutRef.current);
+      matchmakingTimeoutRef.current = null;
+    }
+    setInQueue(false);
+    setSearching(false);
+    setQueueStartTime(null);
+    setQueueTime(0);
+    setRetryCount(0);
+  }, []);
 
   // Create or update player document atomically
   const ensurePlayerDocument = useCallback(async () => {
@@ -58,7 +92,9 @@ export default function Queue() {
             lastActive: serverTimestamp(),
             status: 'online',
             currentMatch: null,
-            lastQueueUpdate: serverTimestamp()
+            lastQueueUpdate: serverTimestamp(),
+            skillRating: 1000, // Default skill rating
+            region: 'global' // Default region
           };
           transaction.set(playerRef, newPlayerData);
           return { success: true, isNew: true };
@@ -76,62 +112,104 @@ export default function Queue() {
     }
   }, [user]);
 
-  // Update player status atomically
+  // Update player status atomically with retry mechanism
   const updatePlayerStatus = useCallback(async (status: string, inQueue: boolean) => {
     if (!user) return;
 
-    try {
-      await runTransaction(db, async (transaction) => {
-        const playerRef = doc(db, 'players', user.uid);
-        const playerDoc = await transaction.get(playerRef);
+    let attempts = 0;
+    while (attempts < MAX_RETRY_ATTEMPTS) {
+      try {
+        await runTransaction(db, async (transaction) => {
+          const playerRef = doc(db, 'players', user.uid);
+          const playerDoc = await transaction.get(playerRef);
 
-        if (!playerDoc.exists()) {
-          throw new Error('Player document not found');
-        }
+          if (!playerDoc.exists()) {
+            throw new Error('Player document not found');
+          }
 
-        const lastUpdate = playerDoc.data().lastQueueUpdate?.toMillis() || 0;
-        if (Date.now() - lastUpdate < LAST_ACTIVE_THRESHOLD) {
-          throw new Error('Too many status updates');
-        }
+          const lastUpdate = playerDoc.data().lastQueueUpdate?.toMillis() || 0;
+          if (Date.now() - lastUpdate < LAST_ACTIVE_THRESHOLD) {
+            throw new Error('Too many status updates');
+          }
 
-        transaction.update(playerRef, {
-          status,
-          inQueue,
-          lastActive: serverTimestamp(),
-          lastQueueUpdate: serverTimestamp()
+          transaction.update(playerRef, {
+            status,
+            inQueue,
+            lastActive: serverTimestamp(),
+            lastQueueUpdate: serverTimestamp()
+          });
         });
-      });
-    } catch (error) {
-      console.error('Error updating player status:', error);
-      throw error;
+        return; // Success, exit the retry loop
+      } catch (error: any) {
+        attempts++;
+        if (attempts === MAX_RETRY_ATTEMPTS) {
+          throw error;
+        }
+        // Wait before retrying (exponential backoff)
+        await new Promise(resolve => setTimeout(resolve, Math.pow(2, attempts) * 100));
+      }
     }
   }, [user]);
 
-  // Check for available matches with atomic transaction
+  // Find best match based on skill rating and region
+  const findBestMatch = useCallback((availablePlayers: Player[], currentPlayer: Player) => {
+    return availablePlayers
+      .filter(player => {
+        const skillDiff = Math.abs((player.skillRating || 1000) - (currentPlayer.skillRating || 1000));
+        const sameRegion = player.region === currentPlayer.region;
+        return skillDiff <= MAX_SKILL_RATING_DIFF || sameRegion;
+      })
+      .sort((a, b) => {
+        const aSkillDiff = Math.abs((a.skillRating || 1000) - (currentPlayer.skillRating || 1000));
+        const bSkillDiff = Math.abs((b.skillRating || 1000) - (currentPlayer.skillRating || 1000));
+        return aSkillDiff - bSkillDiff;
+      })[0];
+  }, []);
+
+  // Check for available matches with atomic transaction and improved matching
   const checkForMatches = useCallback(async () => {
     if (!user || !inQueue) return;
 
     try {
       const result = await runTransaction(db, async (transaction) => {
-        // Query for players in queue
-        const q = query(
-          collection(db, 'players'),
-          where('inQueue', '==', true),
-          where('status', '==', 'searching'),
-          where('lastQueueUpdate', '>', new Date(Date.now() - LAST_ACTIVE_THRESHOLD))
-        );
+        // Get current player data
+        const currentPlayerRef = doc(db, 'players', user.uid);
+        const currentPlayerDoc = await transaction.get(currentPlayerRef);
+        
+        if (!currentPlayerDoc.exists()) {
+          throw new Error('Current player not found');
+        }
 
-        const querySnapshot = await getDocs(q);
+        const currentPlayer = { uid: currentPlayerDoc.id, ...currentPlayerDoc.data() } as Player;
+
+        // Query for players in queue
+        let querySnapshot;
+        try {
+          querySnapshot = await getDocs(queueQuery);
+        } catch (error: any) {
+          if (error.code === 'failed-precondition' && error.message?.includes('index')) {
+            const fallbackQuery = query(
+              collection(db, 'players'),
+              where('inQueue', '==', true),
+              where('status', '==', 'searching')
+            );
+            querySnapshot = await getDocs(fallbackQuery);
+          } else {
+            throw error;
+          }
+        }
+
         const availablePlayers = querySnapshot.docs
           .map(doc => ({ uid: doc.id, ...doc.data() } as Player))
           .filter(player => 
             player.uid !== user.uid && 
             player.status !== 'in_match' &&
-            !player.currentMatch
+            !player.currentMatch &&
+            player.lastQueueUpdate?.toMillis() > Date.now() - LAST_ACTIVE_THRESHOLD
           );
 
         if (availablePlayers.length > 0) {
-          const opponent = availablePlayers[0];
+          const opponent = findBestMatch(availablePlayers, currentPlayer) || availablePlayers[0];
           
           // Verify both players are still available
           const player1Ref = doc(db, 'players', user.uid);
@@ -142,7 +220,6 @@ export default function Queue() {
             transaction.get(player2Ref)
           ]);
 
-          // Verify both players are still in queue and available
           if (!player1Doc.exists() || !player2Doc.exists()) {
             throw new Error('One or both players no longer exist');
           }
@@ -156,19 +233,25 @@ export default function Queue() {
             throw new Error('One or both players are no longer available');
           }
 
-          // Create match document
+          // Create match document with enhanced data
           const matchRef = doc(collection(db, 'matches'));
           const matchData = {
             player1Id: user.uid,
             player2Id: opponent.uid,
             player1Username: player1Data.username,
             player2Username: player2Data.username,
+            player1SkillRating: player1Data.skillRating || 1000,
+            player2SkillRating: player2Data.skillRating || 1000,
+            player1Region: player1Data.region || 'global',
+            player2Region: player2Data.region || 'global',
             status: 'in_progress',
             createdAt: serverTimestamp(),
             winner: null,
             moves: [],
             lastMove: null,
-            lastUpdate: serverTimestamp()
+            lastUpdate: serverTimestamp(),
+            queueTime: queueTime,
+            matchType: 'ranked'
           };
 
           // Update both players' status atomically
@@ -193,42 +276,32 @@ export default function Queue() {
       });
 
       if (result.success) {
-        setSearching(false);
-        setInQueue(false);
-        setQueueTime(0);
-        setQueueStartTime(null);
-        if (queueTimeoutRef.current) {
-          clearTimeout(queueTimeoutRef.current);
-        }
+        cleanup();
         router.push(`/combat?match=${result.matchId}`);
       }
     } catch (error: any) {
       console.error('Error checking for matches:', error);
       if (error.code === 'permission-denied') {
         setError('Permission denied. Please try again.');
+        cleanup();
+      } else if (error.code === 'failed-precondition' && error.message?.includes('index')) {
+        setMatchmakingStatus('Preparing matchmaking system...');
+        return;
       } else if (error.message === 'One or both players are no longer available') {
-        // This is expected sometimes, just continue searching
         return;
       } else {
         setError('Failed to find opponent. Please try again.');
-      }
-      // Reset queue state on error
-      setInQueue(false);
-      setSearching(false);
-      setQueueStartTime(null);
-      if (queueTimeoutRef.current) {
-        clearTimeout(queueTimeoutRef.current);
+        cleanup();
       }
     }
-  }, [user, inQueue, router]);
+  }, [user, inQueue, router, queueQuery, findBestMatch, queueTime, cleanup]);
 
-  // Real-time player updates
+  // Real-time player updates with optimized query
   useEffect(() => {
     if (!user) return;
 
     ensurePlayerDocument();
 
-    // Update user's last active timestamp
     const updateLastActive = async () => {
       try {
         if (Date.now() - lastUpdateRef.current < LAST_ACTIVE_THRESHOLD) {
@@ -244,11 +317,12 @@ export default function Queue() {
     const interval = setInterval(updateLastActive, LAST_ACTIVE_THRESHOLD);
     updateLastActive();
 
-    // Listen for online players with real-time updates
+    // Listen for online players with optimized query
     const q = query(
       collection(db, 'players'),
       where('lastActive', '>', new Date(Date.now() - LAST_ACTIVE_THRESHOLD)),
-      orderBy('lastActive', 'desc')
+      orderBy('lastActive', 'desc'),
+      limit(50) // Limit to 50 players for better performance
     );
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
@@ -265,13 +339,11 @@ export default function Queue() {
     return () => {
       clearInterval(interval);
       unsubscribe();
-      if (queueTimeoutRef.current) {
-        clearTimeout(queueTimeoutRef.current);
-      }
+      cleanup();
     };
-  }, [user, inQueue, ensurePlayerDocument, updatePlayerStatus]);
+  }, [user, inQueue, ensurePlayerDocument, updatePlayerStatus, cleanup]);
 
-  // Queue timer effect with atomic updates
+  // Queue timer effect with atomic updates and progressive matchmaking
   useEffect(() => {
     let timer: NodeJS.Timeout;
     if (searching && queueStartTime) {
@@ -279,23 +351,24 @@ export default function Queue() {
         const elapsedTime = Math.floor((Date.now() - queueStartTime) / 1000);
         setQueueTime(elapsedTime);
 
-        // Update matchmaking status based on time
+        // Progressive matchmaking status
         if (elapsedTime < MIN_QUEUE_TIME) {
           setMatchmakingStatus('Finding optimal opponent...');
         } else if (elapsedTime < MAX_QUEUE_TIME) {
           setMatchmakingStatus('Expanding search parameters...');
+          // Increase skill rating difference threshold
+          MAX_SKILL_RATING_DIFF = Math.min(1000, MAX_SKILL_RATING_DIFF + 100);
         } else {
           setMatchmakingStatus('Searching in all regions...');
+          // Remove region restriction
+          MAX_SKILL_RATING_DIFF = 2000;
         }
 
-        // Ensure player is still in queue
         try {
           await updatePlayerStatus('searching', true);
         } catch (error) {
           console.error('Error updating queue status:', error);
-          setInQueue(false);
-          setSearching(false);
-          setQueueStartTime(null);
+          cleanup();
         }
       }, 1000);
     } else {
@@ -304,18 +377,19 @@ export default function Queue() {
       setMatchmakingStatus('');
     }
     return () => clearInterval(timer);
-  }, [searching, queueStartTime, updatePlayerStatus]);
+  }, [searching, queueStartTime, updatePlayerStatus, cleanup]);
 
-  // Check for matches periodically with atomic updates
+  // Check for matches periodically with exponential backoff
   useEffect(() => {
     let matchCheckInterval: NodeJS.Timeout;
     if (inQueue && searching) {
-      matchCheckInterval = setInterval(checkForMatches, QUEUE_CHECK_INTERVAL);
+      const checkInterval = Math.min(QUEUE_CHECK_INTERVAL * Math.pow(1.5, retryCount), 30000);
+      matchCheckInterval = setInterval(checkForMatches, checkInterval);
     }
     return () => {
       if (matchCheckInterval) clearInterval(matchCheckInterval);
     };
-  }, [inQueue, searching, checkForMatches]);
+  }, [inQueue, searching, checkForMatches, retryCount]);
 
   const toggleQueue = async () => {
     if (!user) return;
@@ -323,27 +397,27 @@ export default function Queue() {
     try {
       const newQueueState = !inQueue;
       
-      // Update local state
       setInQueue(newQueueState);
       setSearching(newQueueState);
       
       if (newQueueState) {
         setQueueStartTime(Date.now());
         setMatchmakingStatus('Finding optimal opponent...');
+        // Reset skill rating difference threshold
+        MAX_SKILL_RATING_DIFF = 500;
       }
 
-      // Update Firestore atomically
       await updatePlayerStatus(newQueueState ? 'searching' : 'online', newQueueState);
 
       if (newQueueState) {
         await checkForMatches();
+      } else {
+        cleanup();
       }
     } catch (error) {
       console.error('Error toggling queue:', error);
       setError('Failed to update queue status');
-      setInQueue(false);
-      setSearching(false);
-      setQueueStartTime(null);
+      cleanup();
     }
   };
 

@@ -16,7 +16,7 @@
     },
     {
       "collectionGroup": "matches",
-      "queryScope": "COLLECTION",
+      "queryScope": "COLLECTION", 
       "fields": [
         {
           "fieldPath": "timestamp",
@@ -38,6 +38,24 @@
         },
         {
           "fieldPath": "uid",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "players",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "inQueue",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "lastQueueUpdate",
           "order": "ASCENDING"
         }
       ]
