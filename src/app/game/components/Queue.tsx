@@ -23,10 +23,10 @@ interface Player {
 
 const DEFAULT_AVATAR = '/default-avatar.svg';
 const MIN_QUEUE_TIME = 60; // Minimum queue time in seconds
-const MAX_QUEUE_TIME = 300; // Maximum queue time in seconds
+let MAX_QUEUE_TIME = 300; // Maximum queue time in seconds
 const QUEUE_CHECK_INTERVAL = 5000; // Check for matches every 5 seconds
 const LAST_ACTIVE_THRESHOLD = 30000; // 30 seconds
-const MAX_SKILL_RATING_DIFF = 500; // Maximum skill rating difference for matchmaking
+let MAX_SKILL_RATING_DIFF = 500; // Maximum skill rating difference for matchmaking
 const MAX_RETRY_ATTEMPTS = 3; // Maximum number of retry attempts for match creation
 
 export default function Queue() {
