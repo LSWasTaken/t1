@@ -3,11 +3,7 @@ import { Inter } from 'next/font/google'
 import { ToastContainer } from 'react-toastify'
 import 'react-toastify/dist/ReactToastify.css'
 import { AuthProvider } from '@/lib/auth'
-import React, { ReactNode } from 'react';
-
-const ClientLayout: React.FC<{ children: ReactNode }> = ({ children }) => {
-  return <div>{children}</div>;
-};
+import ClientLayout from './ClientLayout'
 
 const inter = Inter({ subsets: ['latin'] })
 

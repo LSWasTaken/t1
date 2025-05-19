@@ -1,201 +1,137 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useAuth } from '@/lib/auth';
+import { collection, query, where, orderBy, limit, getDocs } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
-import { collection, query, where, orderBy, limit, onSnapshot, doc, getDoc, DocumentData } from 'firebase/firestore';
-
-interface Player {
-  username?: string;
-  email?: string;
-}
 
 interface Match {
   id: string;
   player1Id: string;
   player2Id: string;
-  player1Power: number;
-  player2Power: number;
-  winner: string;
-  powerGained: number;
-  timestamp: any;
-  player1Name?: string;
-  player2Name?: string;
+  player1Username: string;
+  player2Username: string;
+  winner: string | null;
+  timestamp: Date;
+  powerGain?: number;
 }
 
 export default function MatchHistory() {
   const { user } = useAuth();
   const [matches, setMatches] = useState<Match[]>([]);
   const [loading, setLoading] = useState(true);
-  const [filter, setFilter] = useState<'all' | 'wins' | 'losses'>('all');
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!user) return;
+    const fetchMatchHistory = async () => {
+      if (!user) return;
 
-    // Query for matches involving the current user
-    const q = query(
-      collection(db, 'matches'),
-      where('player1Id', '==', user.uid),
-      orderBy('timestamp', 'desc'),
-      limit(20)
-    );
-
-    const q2 = query(
-      collection(db, 'matches'),
-      where('player2Id', '==', user.uid),
-      orderBy('timestamp', 'desc'),
-      limit(20)
-    );
-
-    // Set up real-time listeners
-    const unsubscribe1 = onSnapshot(q, async (snapshot) => {
-      const matchesData = await Promise.all(
-        snapshot.docs.map(async (docSnapshot) => {
-          const data = docSnapshot.data();
-          // Get player names
-          const player2Doc = await getDoc(doc(db, 'players', data.player2Id));
-          const player2Data = player2Doc.data() as Player;
-          
-          return {
-            id: docSnapshot.id,
-            ...data,
-            player1Name: user.email?.split('@')[0] || 'You',
-            player2Name: player2Data?.username || player2Data?.email?.split('@')[0] || 'Anonymous'
-          } as Match;
-        })
-      );
-      setMatches(prev => [...matchesData, ...prev.filter(m => m.player2Id === user.uid)]);
-      setLoading(false);
-    });
-
-    const unsubscribe2 = onSnapshot(q2, async (snapshot) => {
-      const matchesData = await Promise.all(
-        snapshot.docs.map(async (docSnapshot) => {
-          const data = docSnapshot.data();
-          // Get player names
-          const player1Doc = await getDoc(doc(db, 'players', data.player1Id));
-          const player1Data = player1Doc.data() as Player;
-          
-          return {
-            id: docSnapshot.id,
-            ...data,
-            player1Name: player1Data?.username || player1Data?.email?.split('@')[0] || 'Anonymous',
-            player2Name: user.email?.split('@')[0] || 'You'
-          } as Match;
-        })
-      );
-      setMatches(prev => [...matchesData, ...prev.filter(m => m.player1Id === user.uid)]);
-      setLoading(false);
-    });
-
-    return () => {
-      unsubscribe1();
-      unsubscribe2();
+      try {
+        const matchesRef = collection(db, 'matches');
+        const q = query(
+          matchesRef,
+          where('player1Id', '==', user.uid),
+          orderBy('timestamp', 'desc'),
+          limit(10)
+        );
+        
+        const snapshot = await getDocs(q);
+        const matchData: Match[] = [];
+        
+        for (const doc of snapshot.docs) {
+          const match = doc.data();
+          matchData.push({
+            id: doc.id,
+            player1Id: match.player1Id,
+            player2Id: match.player2Id,
+            player1Username: match.player1Username || 'Unknown',
+            player2Username: match.player2Username || 'Unknown',
+            winner: match.winner,
+            timestamp: match.timestamp.toDate(),
+            powerGain: match.powerGain
+          });
+        }
+        
+        setMatches(matchData);
+      } catch (err) {
+        console.error('Error fetching match history:', err);
+        setError('Failed to load match history');
+      } finally {
+        setLoading(false);
+      }
     };
-  }, [user]);
 
-  const filteredMatches = matches.filter(match => {
-    if (filter === 'all') return true;
-    if (filter === 'wins') return match.winner === user?.uid;
-    if (filter === 'losses') return match.winner !== user?.uid;
-    return true;
-  });
+    fetchMatchHistory();
+  }, [user]);
 
   if (loading) {
     return (
-      <div className="bg-cyber-dark rounded-lg p-6">
-        <h3 className="text-2xl font-press-start text-cyber-pink mb-6 text-center">
-          Battle History
-        </h3>
-        <div className="text-cyber-blue text-center">Loading matches...</div>
+      <div className="text-center">
+        <h2 className="text-xl font-press-start animate-pulse">Loading match history...</h2>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="text-center">
+        <h2 className="text-xl font-press-start text-cyber-red mb-4">{error}</h2>
+        <button
+          onClick={() => window.location.reload()}
+          className="cyber-button"
+        >
+          Retry
+        </button>
       </div>
     );
   }
 
   return (
-    <div className="bg-cyber-dark rounded-lg p-6">
-      <h3 className="text-2xl font-press-start text-cyber-pink mb-6 text-center">
-        Battle History
-      </h3>
-
-      <div className="flex justify-center space-x-4 mb-6">
-        <button
-          onClick={() => setFilter('all')}
-          className={`px-4 py-2 rounded-lg font-press-start transition-colors ${
-            filter === 'all'
-              ? 'bg-cyber-pink text-white'
-              : 'bg-cyber-black text-cyber-blue hover:bg-cyber-purple'
-          }`}
-        >
-          All
-        </button>
-        <button
-          onClick={() => setFilter('wins')}
-          className={`px-4 py-2 rounded-lg font-press-start transition-colors ${
-            filter === 'wins'
-              ? 'bg-cyber-green text-white'
-              : 'bg-cyber-black text-cyber-green hover:bg-cyber-purple'
-          }`}
-        >
-          Wins
-        </button>
-        <button
-          onClick={() => setFilter('losses')}
-          className={`px-4 py-2 rounded-lg font-press-start transition-colors ${
-            filter === 'losses'
-              ? 'bg-cyber-red text-white'
-              : 'bg-cyber-black text-cyber-red hover:bg-cyber-purple'
-          }`}
-        >
-          Losses
-        </button>
-      </div>
-
-      <div className="space-y-4">
-        {filteredMatches.length === 0 ? (
-          <div className="text-cyber-blue text-center">No matches found</div>
-        ) : (
-          filteredMatches.map((match) => {
-            const isWinner = match.winner === user?.uid;
-            const isPlayer1 = match.player1Id === user?.uid;
-            const opponentName = isPlayer1 ? match.player2Name : match.player1Name;
-            const opponentPower = isPlayer1 ? match.player2Power : match.player1Power;
-            const yourPower = isPlayer1 ? match.player1Power : match.player2Power;
-
-            return (
-              <div
-                key={match.id}
-                className={`bg-cyber-black rounded-lg p-4 ${
-                  isWinner ? 'border-l-4 border-cyber-green' : 'border-l-4 border-cyber-red'
-                }`}
-              >
-                <div className="flex justify-between items-center mb-2">
-                  <span className={`font-press-start ${isWinner ? 'text-cyber-green' : 'text-cyber-red'}`}>
-                    {isWinner ? 'Victory' : 'Defeat'}
+    <div>
+      <h2 className="text-2xl font-press-start mb-4">Match History</h2>
+      <div className="bg-cyber-dark rounded-lg overflow-hidden">
+        <table className="w-full">
+          <thead>
+            <tr className="bg-cyber-gray">
+              <th className="p-4 text-left">Date</th>
+              <th className="p-4 text-left">Opponent</th>
+              <th className="p-4 text-center">Result</th>
+              <th className="p-4 text-right">Power</th>
+            </tr>
+          </thead>
+          <tbody>
+            {matches.map((match) => (
+              <tr key={match.id} className="border-t border-cyber-gray">
+                <td className="p-4">
+                  {match.timestamp.toLocaleDateString()}
+                </td>
+                <td className="p-4">
+                  {match.player2Username}
+                </td>
+                <td className="p-4 text-center">
+                  <span className={`font-press-start ${
+                    match.winner === user?.uid
+                      ? 'text-cyber-green'
+                      : match.winner === null
+                      ? 'text-cyber-yellow'
+                      : 'text-cyber-red'
+                  }`}>
+                    {match.winner === user?.uid
+                      ? 'Victory'
+                      : match.winner === null
+                      ? 'Draw'
+                      : 'Defeat'}
                   </span>
-                  <span className="text-cyber-blue text-sm">
-                    {new Date(match.timestamp?.toDate()).toLocaleDateString()}
+                </td>
+                <td className="p-4 text-right">
+                  <span className={match.powerGain && match.powerGain > 0 ? 'text-cyber-green' : ''}>
+                    {match.powerGain ? (match.powerGain > 0 ? `+${match.powerGain}` : match.powerGain) : '-'}
                   </span>
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <p className="text-cyber-pink">You</p>
-                    <p className="text-cyber-blue">Power: {yourPower}</p>
-                  </div>
-                  <div>
-                    <p className="text-cyber-purple">vs {opponentName}</p>
-                    <p className="text-cyber-blue">Power: {opponentPower}</p>
-                  </div>
-                </div>
-                {isWinner && (
-                  <p className="text-cyber-green mt-2">
-                    Power Gained: +{match.powerGained}
-                  </p>
-                )}
-              </div>
-            );
-          })
-        )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </div>
   );

@@ -1,0 +1,72 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    function isOnline() {
+      return isAuthenticated() && 
+        exists(/databases/$(database)/documents/players/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/players/$(request.auth.uid)).data.status == 'online';
+    }
+    
+    function isInMatch() {
+      return isAuthenticated() && 
+        exists(/databases/$(database)/documents/players/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/players/$(request.auth.uid)).data.status == 'in_match';
+    }
+    
+    function isInTanzaMatch() {
+      return isAuthenticated() && 
+        exists(/databases/$(database)/documents/players/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/players/$(request.auth.uid)).data.status == 'in_tanza_match';
+    }
+
+    // Users collection
+    match /users/{userId} {
+      allow read: if isAuthenticated() && (isOwner(userId) || isOnline());
+      allow create: if isAuthenticated() && isOwner(userId);
+      allow update: if isAuthenticated() && isOwner(userId);
+      allow delete: if isAuthenticated() && isOwner(userId);
+    }
+
+    // Players collection
+    match /players/{playerId} {
+      allow read: if isAuthenticated() && (isOwner(playerId) || isOnline());
+      allow write: if isAuthenticated() && (isOwner(playerId) || isInMatch() || isInTanzaMatch());
+    }
+
+    // Matches collection
+    match /matches/{matchId} {
+      allow read: if isAuthenticated() && (
+        resource.data.player1Id == request.auth.uid ||
+        resource.data.player2Id == request.auth.uid
+      );
+      allow create: if isAuthenticated();
+      allow update: if isAuthenticated() && (
+        resource.data.player1Id == request.auth.uid ||
+        resource.data.player2Id == request.auth.uid
+      );
+    }
+
+    // Tanza matches collection
+    match /tanza_matches/{matchId} {
+      allow read: if isAuthenticated() && (
+        resource.data.player1Id == request.auth.uid ||
+        resource.data.player2Id == request.auth.uid
+      );
+      allow create: if isAuthenticated();
+      allow update: if isAuthenticated() && (
+        resource.data.player1Id == request.auth.uid ||
+        resource.data.player2Id == request.auth.uid
+      );
+    }
+  }
+}
