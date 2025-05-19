@@ -1,9 +1,9 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useAuth } from '@/lib/auth';
 import { db } from '@/lib/firebase';
-import { collection, query, where, orderBy, limit, getDocs, doc, updateDoc, onSnapshot, serverTimestamp, setDoc, getDoc } from 'firebase/firestore';
+import { collection, query, where, orderBy, limit, getDocs, doc, updateDoc, onSnapshot, serverTimestamp, setDoc, getDoc, runTransaction, writeBatch } from 'firebase/firestore';
 import { useRouter } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -15,9 +15,15 @@ interface Player {
   inQueue: boolean;
   lastActive: any;
   status?: string;
+  currentMatch?: string | null;
+  lastQueueUpdate?: any;
 }
 
 const DEFAULT_AVATAR = '/default-avatar.svg';
+const MIN_QUEUE_TIME = 60; // Minimum queue time in seconds
+const MAX_QUEUE_TIME = 300; // Maximum queue time in seconds
+const QUEUE_CHECK_INTERVAL = 5000; // Check for matches every 5 seconds
+const LAST_ACTIVE_THRESHOLD = 30000; // 30 seconds
 
 export default function Queue() {
   const { user } = useAuth();
@@ -28,101 +34,230 @@ export default function Queue() {
   const [inQueue, setInQueue] = useState(false);
   const [searching, setSearching] = useState(false);
   const [queueTime, setQueueTime] = useState(0);
+  const [queueStartTime, setQueueStartTime] = useState<number | null>(null);
+  const [matchmakingStatus, setMatchmakingStatus] = useState<string>('');
+  const lastUpdateRef = useRef<number>(0);
+  const queueTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Create or update player document
-  const ensurePlayerDocument = async () => {
+  // Create or update player document atomically
+  const ensurePlayerDocument = useCallback(async () => {
     if (!user) return;
 
     try {
-      const playerRef = doc(db, 'players', user.uid);
-      const playerDoc = await getDoc(playerRef);
+      const result = await runTransaction(db, async (transaction) => {
+        const playerRef = doc(db, 'players', user.uid);
+        const playerDoc = await transaction.get(playerRef);
 
-      if (!playerDoc.exists()) {
-        // Create new player document
-        await setDoc(playerRef, {
-          uid: user.uid,
-          username: user.displayName || 'Anonymous',
-          avatar: user.photoURL || DEFAULT_AVATAR,
-          power: 0,
-          inQueue: false,
-          lastActive: serverTimestamp(),
-          status: 'online'
-        });
+        if (!playerDoc.exists()) {
+          const newPlayerData = {
+            uid: user.uid,
+            username: user.displayName || 'Anonymous',
+            avatar: user.photoURL || DEFAULT_AVATAR,
+            power: 0,
+            inQueue: false,
+            lastActive: serverTimestamp(),
+            status: 'online',
+            currentMatch: null,
+            lastQueueUpdate: serverTimestamp()
+          };
+          transaction.set(playerRef, newPlayerData);
+          return { success: true, isNew: true };
+        }
+
+        return { success: true, isNew: false };
+      });
+
+      if (!result.success) {
+        throw new Error('Failed to ensure player document');
       }
     } catch (error) {
       console.error('Error ensuring player document:', error);
       setError('Failed to initialize player data');
     }
-  };
+  }, [user]);
 
-  // Check for available matches
-  const checkForMatches = async () => {
+  // Update player status atomically
+  const updatePlayerStatus = useCallback(async (status: string, inQueue: boolean) => {
+    if (!user) return;
+
+    try {
+      await runTransaction(db, async (transaction) => {
+        const playerRef = doc(db, 'players', user.uid);
+        const playerDoc = await transaction.get(playerRef);
+
+        if (!playerDoc.exists()) {
+          throw new Error('Player document not found');
+        }
+
+        const lastUpdate = playerDoc.data().lastQueueUpdate?.toMillis() || 0;
+        if (Date.now() - lastUpdate < LAST_ACTIVE_THRESHOLD) {
+          throw new Error('Too many status updates');
+        }
+
+        transaction.update(playerRef, {
+          status,
+          inQueue,
+          lastActive: serverTimestamp(),
+          lastQueueUpdate: serverTimestamp()
+        });
+      });
+    } catch (error) {
+      console.error('Error updating player status:', error);
+      throw error;
+    }
+  }, [user]);
+
+  // Check for available matches with atomic transaction
+  const checkForMatches = useCallback(async () => {
     if (!user || !inQueue) return;
 
     try {
-      // Query for players in queue
-      const q = query(
-        collection(db, 'players'),
-        where('inQueue', '==', true)
-      );
+      const result = await runTransaction(db, async (transaction) => {
+        // Query for players in queue
+        const q = query(
+          collection(db, 'players'),
+          where('inQueue', '==', true),
+          where('status', '==', 'searching'),
+          where('lastQueueUpdate', '>', new Date(Date.now() - LAST_ACTIVE_THRESHOLD))
+        );
 
-      const querySnapshot = await getDocs(q);
-      const availablePlayers = querySnapshot.docs
-        .map(doc => ({ uid: doc.id, ...doc.data() } as Player))
-        .filter(player => player.uid !== user.uid && player.status !== 'in_match');
+        const querySnapshot = await getDocs(q);
+        const availablePlayers = querySnapshot.docs
+          .map(doc => ({ uid: doc.id, ...doc.data() } as Player))
+          .filter(player => 
+            player.uid !== user.uid && 
+            player.status !== 'in_match' &&
+            !player.currentMatch
+          );
 
-      if (availablePlayers.length > 0) {
-        const opponent = availablePlayers[0];
-        await startMatch(opponent.uid);
+        if (availablePlayers.length > 0) {
+          const opponent = availablePlayers[0];
+          
+          // Verify both players are still available
+          const player1Ref = doc(db, 'players', user.uid);
+          const player2Ref = doc(db, 'players', opponent.uid);
+          
+          const [player1Doc, player2Doc] = await Promise.all([
+            transaction.get(player1Ref),
+            transaction.get(player2Ref)
+          ]);
+
+          // Verify both players are still in queue and available
+          if (!player1Doc.exists() || !player2Doc.exists()) {
+            throw new Error('One or both players no longer exist');
+          }
+
+          const player1Data = player1Doc.data();
+          const player2Data = player2Doc.data();
+
+          if (!player1Data.inQueue || !player2Data.inQueue ||
+              player1Data.status !== 'searching' || player2Data.status !== 'searching' ||
+              player1Data.currentMatch || player2Data.currentMatch) {
+            throw new Error('One or both players are no longer available');
+          }
+
+          // Create match document
+          const matchRef = doc(collection(db, 'matches'));
+          const matchData = {
+            player1Id: user.uid,
+            player2Id: opponent.uid,
+            player1Username: player1Data.username,
+            player2Username: player2Data.username,
+            status: 'in_progress',
+            createdAt: serverTimestamp(),
+            winner: null,
+            moves: [],
+            lastMove: null,
+            lastUpdate: serverTimestamp()
+          };
+
+          // Update both players' status atomically
+          transaction.set(matchRef, matchData);
+          transaction.update(player1Ref, {
+            inQueue: false,
+            currentMatch: matchRef.id,
+            status: 'in_match',
+            lastQueueUpdate: serverTimestamp()
+          });
+          transaction.update(player2Ref, {
+            inQueue: false,
+            currentMatch: matchRef.id,
+            status: 'in_match',
+            lastQueueUpdate: serverTimestamp()
+          });
+
+          return { matchId: matchRef.id, success: true };
+        }
+
+        return { success: false };
+      });
+
+      if (result.success) {
+        setSearching(false);
+        setInQueue(false);
+        setQueueTime(0);
+        setQueueStartTime(null);
+        if (queueTimeoutRef.current) {
+          clearTimeout(queueTimeoutRef.current);
+        }
+        router.push(`/combat?match=${result.matchId}`);
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error checking for matches:', error);
-      setError('Failed to find opponent');
+      if (error.code === 'permission-denied') {
+        setError('Permission denied. Please try again.');
+      } else if (error.message === 'One or both players are no longer available') {
+        // This is expected sometimes, just continue searching
+        return;
+      } else {
+        setError('Failed to find opponent. Please try again.');
+      }
+      // Reset queue state on error
+      setInQueue(false);
+      setSearching(false);
+      setQueueStartTime(null);
+      if (queueTimeoutRef.current) {
+        clearTimeout(queueTimeoutRef.current);
+      }
     }
-  };
+  }, [user, inQueue, router]);
 
+  // Real-time player updates
   useEffect(() => {
     if (!user) return;
 
-    // Ensure player document exists
     ensurePlayerDocument();
 
     // Update user's last active timestamp
     const updateLastActive = async () => {
       try {
-        const playerRef = doc(db, 'players', user.uid);
-        const playerDoc = await getDoc(playerRef);
-        
-        if (playerDoc.exists()) {
-          await updateDoc(playerRef, {
-            lastActive: serverTimestamp(),
-            inQueue: inQueue,
-            status: inQueue ? 'searching' : 'online'
-          });
-        } else {
-          // If document doesn't exist, create it
-          await ensurePlayerDocument();
+        if (Date.now() - lastUpdateRef.current < LAST_ACTIVE_THRESHOLD) {
+          return;
         }
+        await updatePlayerStatus(inQueue ? 'searching' : 'online', inQueue);
+        lastUpdateRef.current = Date.now();
       } catch (error) {
         console.error('Error updating last active:', error);
       }
     };
 
-    // Update every 30 seconds
-    const interval = setInterval(updateLastActive, 30000);
-    updateLastActive(); // Initial update
+    const interval = setInterval(updateLastActive, LAST_ACTIVE_THRESHOLD);
+    updateLastActive();
 
-    // Listen for online players
+    // Listen for online players with real-time updates
     const q = query(
       collection(db, 'players'),
-      where('lastActive', '>', new Date(Date.now() - 60000)), // Active in last minute
+      where('lastActive', '>', new Date(Date.now() - LAST_ACTIVE_THRESHOLD)),
       orderBy('lastActive', 'desc')
     );
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const onlinePlayers = snapshot.docs
         .map(doc => ({ uid: doc.id, ...doc.data() } as Player))
-        .filter(player => player.uid !== user.uid); // Exclude current user
+        .filter(player => 
+          player.uid !== user.uid && 
+          player.lastActive?.toMillis() > Date.now() - LAST_ACTIVE_THRESHOLD
+        );
       setPlayers(onlinePlayers);
       setLoading(false);
     });
@@ -130,50 +265,76 @@ export default function Queue() {
     return () => {
       clearInterval(interval);
       unsubscribe();
+      if (queueTimeoutRef.current) {
+        clearTimeout(queueTimeoutRef.current);
+      }
     };
-  }, [user, inQueue]);
+  }, [user, inQueue, ensurePlayerDocument, updatePlayerStatus]);
 
-  // Queue timer effect
+  // Queue timer effect with atomic updates
   useEffect(() => {
     let timer: NodeJS.Timeout;
-    if (searching) {
-      timer = setInterval(() => {
-        setQueueTime(prev => prev + 1);
+    if (searching && queueStartTime) {
+      timer = setInterval(async () => {
+        const elapsedTime = Math.floor((Date.now() - queueStartTime) / 1000);
+        setQueueTime(elapsedTime);
+
+        // Update matchmaking status based on time
+        if (elapsedTime < MIN_QUEUE_TIME) {
+          setMatchmakingStatus('Finding optimal opponent...');
+        } else if (elapsedTime < MAX_QUEUE_TIME) {
+          setMatchmakingStatus('Expanding search parameters...');
+        } else {
+          setMatchmakingStatus('Searching in all regions...');
+        }
+
+        // Ensure player is still in queue
+        try {
+          await updatePlayerStatus('searching', true);
+        } catch (error) {
+          console.error('Error updating queue status:', error);
+          setInQueue(false);
+          setSearching(false);
+          setQueueStartTime(null);
+        }
       }, 1000);
     } else {
       setQueueTime(0);
+      setQueueStartTime(null);
+      setMatchmakingStatus('');
     }
     return () => clearInterval(timer);
-  }, [searching]);
+  }, [searching, queueStartTime, updatePlayerStatus]);
 
-  // Check for matches periodically while in queue
+  // Check for matches periodically with atomic updates
   useEffect(() => {
     let matchCheckInterval: NodeJS.Timeout;
     if (inQueue && searching) {
-      matchCheckInterval = setInterval(checkForMatches, 2000); // Check every 2 seconds
+      matchCheckInterval = setInterval(checkForMatches, QUEUE_CHECK_INTERVAL);
     }
     return () => {
       if (matchCheckInterval) clearInterval(matchCheckInterval);
     };
-  }, [inQueue, searching, user]);
+  }, [inQueue, searching, checkForMatches]);
 
   const toggleQueue = async () => {
     if (!user) return;
 
     try {
       const newQueueState = !inQueue;
+      
+      // Update local state
       setInQueue(newQueueState);
       setSearching(newQueueState);
+      
+      if (newQueueState) {
+        setQueueStartTime(Date.now());
+        setMatchmakingStatus('Finding optimal opponent...');
+      }
 
-      // Update queue status
-      const playerRef = doc(db, 'players', user.uid);
-      await updateDoc(playerRef, {
-        inQueue: newQueueState,
-        lastActive: serverTimestamp(),
-        status: newQueueState ? 'searching' : 'online'
-      });
+      // Update Firestore atomically
+      await updatePlayerStatus(newQueueState ? 'searching' : 'online', newQueueState);
 
-      // If joining queue, check for available matches immediately
       if (newQueueState) {
         await checkForMatches();
       }
@@ -182,50 +343,7 @@ export default function Queue() {
       setError('Failed to update queue status');
       setInQueue(false);
       setSearching(false);
-    }
-  };
-
-  const startMatch = async (opponentId: string) => {
-    if (!user) return;
-
-    try {
-      // Create match document
-      const matchRef = doc(collection(db, 'matches'));
-      await setDoc(matchRef, {
-        player1Id: user.uid,
-        player2Id: opponentId,
-        status: 'in_progress',
-        createdAt: serverTimestamp(),
-        winner: null,
-        moves: [],
-        lastMove: null
-      });
-
-      // Update both players' status
-      const batch = [
-        updateDoc(doc(db, 'players', user.uid), {
-          inQueue: false,
-          currentMatch: matchRef.id,
-          status: 'in_match'
-        }),
-        updateDoc(doc(db, 'players', opponentId), {
-          inQueue: false,
-          currentMatch: matchRef.id,
-          status: 'in_match'
-        })
-      ];
-
-      await Promise.all(batch);
-
-      setSearching(false);
-      setInQueue(false);
-      // Redirect to combat page
-      router.push(`/combat?match=${matchRef.id}`);
-    } catch (error) {
-      console.error('Error starting match:', error);
-      setError('Failed to start match');
-      setInQueue(false);
-      setSearching(false);
+      setQueueStartTime(null);
     }
   };
 
@@ -257,6 +375,7 @@ export default function Queue() {
             setError(null);
             setInQueue(false);
             setSearching(false);
+            setQueueStartTime(null);
           }}
           className="mt-2 px-4 py-2 bg-cyber-pink text-white rounded-lg hover:bg-pink-700 transition-colors"
         >
@@ -294,6 +413,15 @@ export default function Queue() {
               inQueue ? 'Leave Queue' : 'Join Queue'
             )}
           </button>
+          {searching && matchmakingStatus && (
+            <motion.p 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              className="text-cyber-blue text-sm mt-2 text-center"
+            >
+              {matchmakingStatus}
+            </motion.p>
+          )}
         </div>
 
         <div className="mt-6">
