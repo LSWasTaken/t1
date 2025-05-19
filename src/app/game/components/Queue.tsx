@@ -63,14 +63,13 @@ export default function Queue() {
       // Query for players in queue
       const q = query(
         collection(db, 'players'),
-        where('inQueue', '==', true),
-        where('uid', '!=', user.uid)
+        where('inQueue', '==', true)
       );
 
       const querySnapshot = await getDocs(q);
       const availablePlayers = querySnapshot.docs
         .map(doc => ({ uid: doc.id, ...doc.data() } as Player))
-        .filter(player => player.uid !== user.uid);
+        .filter(player => player.uid !== user.uid && player.status !== 'in_match');
 
       if (availablePlayers.length > 0) {
         const opponent = availablePlayers[0];
