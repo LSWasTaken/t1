@@ -34,6 +34,9 @@ export default function Profile({ selectedPlayer }: ProfileProps) {
   const [player, setPlayer] = useState<Player | null>(null);
   const [loading, setLoading] = useState(true);
   const [duelRequests, setDuelRequests] = useState<DuelRequest[]>([]);
+  const [isEditing, setIsEditing] = useState(false);
+  const [editedName, setEditedName] = useState('');
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   useEffect(() => {
     if (user) {
@@ -41,6 +44,12 @@ export default function Profile({ selectedPlayer }: ProfileProps) {
       subscribeToDuelRequests();
     }
   }, [user]);
+
+  useEffect(() => {
+    if (player) {
+      setEditedName(player.username || player.email?.split('@')[0] || 'Anonymous');
+    }
+  }, [player]);
 
   const loadPlayerData = async () => {
     if (!user) return;
@@ -123,6 +132,24 @@ export default function Profile({ selectedPlayer }: ProfileProps) {
     }
   };
 
+  const handleSaveName = async () => {
+    if (!user || !editedName.trim()) return;
+
+    try {
+      setSaveError(null);
+      const playerRef = doc(db, 'players', user.uid);
+      await updateDoc(playerRef, {
+        username: editedName.trim()
+      });
+      setIsEditing(false);
+      // Reload player data to get the updated name
+      await loadPlayerData();
+    } catch (error) {
+      console.error('Error saving username:', error);
+      setSaveError('Failed to save username. Please try again.');
+    }
+  };
+
   if (loading) {
     return (
       <div className="text-cyber-blue text-center">Loading profile...</div>
@@ -144,10 +171,47 @@ export default function Profile({ selectedPlayer }: ProfileProps) {
                 Challenge
               </button>
             </>
+          ) : isEditing ? (
+            <div className="flex items-center space-x-2">
+              <input
+                type="text"
+                value={editedName}
+                onChange={(e) => setEditedName(e.target.value)}
+                className="px-3 py-2 bg-cyber-black border-2 border-cyber-pink text-cyber-pink rounded-lg font-press-start focus:outline-none focus:border-cyber-purple"
+                maxLength={20}
+                placeholder="Enter username"
+              />
+              <button
+                onClick={handleSaveName}
+                className="px-4 py-2 bg-cyber-pink text-white rounded-lg font-press-start hover:bg-cyber-purple transition-colors"
+              >
+                Save
+              </button>
+              <button
+                onClick={() => {
+                  setIsEditing(false);
+                  setEditedName(player?.username || player?.email?.split('@')[0] || 'Anonymous');
+                }}
+                className="px-4 py-2 bg-cyber-black border-2 border-cyber-pink text-cyber-pink rounded-lg font-press-start hover:bg-cyber-purple transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
           ) : (
-            player?.username || player?.email?.split('@')[0] || 'Anonymous'
+            <div className="flex items-center space-x-2">
+              {player?.username || player?.email?.split('@')[0] || 'Anonymous'}
+              <button
+                onClick={() => setIsEditing(true)}
+                className="ml-2 px-3 py-1 bg-cyber-black border border-cyber-pink text-cyber-pink rounded-lg font-press-start text-sm hover:bg-cyber-purple transition-colors"
+              >
+                Edit
+              </button>
+            </div>
           )}
         </h2>
+        {saveError && (
+          <p className="text-cyber-red text-sm mb-4">{saveError}</p>
+        )}
         <div className="grid grid-cols-2 gap-4">
           <div className="text-cyber-blue">
             Power: {selectedPlayer ? selectedPlayer.power : player?.power || 0}

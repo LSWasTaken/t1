@@ -160,6 +160,8 @@ export default function Queue() {
   const [reconnectAttempts, setReconnectAttempts] = useState(0);
   const [isReconnecting, setIsReconnecting] = useState(false);
   const [searching, setSearching] = useState(false);
+  const [onlineCount, setOnlineCount] = useState(0);
+  const [lastActiveThreshold] = useState(30000); // 30 seconds
   
   const queueTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const matchCheckIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -322,7 +324,51 @@ export default function Queue() {
     }
   }, [user]);
 
-  // Find match
+  // Real-time player updates with online count
+  useEffect(() => {
+    if (!user) return;
+
+    const setupRealtimeUpdates = async () => {
+      try {
+        await initializePlayer();
+        setConnectionStatus(STATUS_MESSAGES.CONNECTED);
+
+        // Query for all active players
+        const q = query(
+          collection(db, 'players'),
+          where('lastActive', '>', new Date(Date.now() - lastActiveThreshold)),
+          orderBy('lastActive', 'desc')
+        );
+
+        const unsubscribe = onSnapshot(q, 
+          (snapshot) => {
+            const onlinePlayers = snapshot.docs
+              .map(doc => ({ uid: doc.id, ...doc.data() } as MatchmakingPlayer))
+              .filter(player => player.uid !== user.uid);
+            
+            setPlayers(onlinePlayers);
+            setOnlineCount(onlinePlayers.length);
+            setLoading(false);
+          },
+          (error) => {
+            handleError(error, 'realtime-updates');
+          }
+        );
+
+        return unsubscribe;
+      } catch (error) {
+        handleError(error, 'setup-realtime-updates');
+        return () => {};
+      }
+    };
+
+    const unsubscribe = setupRealtimeUpdates();
+    return () => {
+      unsubscribe.then(unsub => unsub());
+    };
+  }, [user, initializePlayer, lastActiveThreshold]);
+
+  // Find match with improved matching logic
   const findMatch = useCallback(async () => {
     if (!user || !inQueue) return;
 
@@ -336,7 +382,7 @@ export default function Queue() {
 
       const currentPlayer = playerDoc.data() as MatchmakingPlayer;
 
-      // Simplified query to avoid index requirements
+      // Get available players with simpler query
       const q = query(
         collection(db, 'players'),
         where('inQueue', '==', true),
@@ -354,6 +400,8 @@ export default function Queue() {
         );
 
       if (availablePlayers.length === 0) {
+        // Update matchmaking status to show no matches found
+        setMatchmakingStatus('No suitable matches found. Expanding search...');
         return;
       }
 
@@ -364,7 +412,7 @@ export default function Queue() {
         return currentDiff < bestDiff ? current : best;
       });
 
-      // Create match
+      // Create match with transaction to ensure atomicity
       const matchRef = doc(collection(db, 'matches'));
       const matchData = {
         player1Id: user.uid,
@@ -381,28 +429,43 @@ export default function Queue() {
         lastUpdate: serverTimestamp()
       };
 
-      // Update both players
-      const batch = writeBatch(db);
-      batch.set(matchRef, matchData);
-      batch.update(playerRef, {
-        inQueue: false,
-        currentMatch: matchRef.id,
-        status: 'in_match',
-        lastActive: serverTimestamp()
-      });
-      batch.update(doc(db, 'players', bestMatch.uid), {
-        inQueue: false,
-        currentMatch: matchRef.id,
-        status: 'in_match',
-        lastActive: serverTimestamp()
+      // Use transaction to ensure both players are updated atomically
+      await runTransaction(db, async (transaction) => {
+        // Check if players are still available
+        const player1Doc = await transaction.get(playerRef);
+        const player2Doc = await transaction.get(doc(db, 'players', bestMatch.uid));
+
+        if (!player1Doc.exists() || !player2Doc.exists()) {
+          throw new Error('One or both players no longer available');
+        }
+
+        const player1Data = player1Doc.data() as MatchmakingPlayer;
+        const player2Data = player2Doc.data() as MatchmakingPlayer;
+
+        if (!player1Data.inQueue || !player2Data.inQueue) {
+          throw new Error('One or both players left the queue');
+        }
+
+        // Create match and update players
+        transaction.set(matchRef, matchData);
+        transaction.update(playerRef, {
+          inQueue: false,
+          currentMatch: matchRef.id,
+          status: 'in_match',
+          lastActive: serverTimestamp()
+        });
+        transaction.update(doc(db, 'players', bestMatch.uid), {
+          inQueue: false,
+          currentMatch: matchRef.id,
+          status: 'in_match',
+          lastActive: serverTimestamp()
+        });
       });
 
-      await batch.commit();
       cleanup();
       router.push(`/combat?match=${matchRef.id}`);
     } catch (error: any) {
       if (error.code === 'failed-precondition') {
-        // Handle index-related errors
         setError('Matchmaking system is being updated. Please try again in a moment.');
         setLastError({ 
           message: 'The matchmaking system requires an update. Please try again.', 
@@ -451,48 +514,6 @@ export default function Queue() {
       }
     };
   }, [inQueue, findMatch]);
-
-  // Real-time player updates
-  useEffect(() => {
-    if (!user) return;
-
-    const setupRealtimeUpdates = async () => {
-      try {
-        await initializePlayer();
-        setConnectionStatus(STATUS_MESSAGES.CONNECTED);
-
-        const q = query(
-          collection(db, 'players'),
-          where('lastActive', '>', new Date(Date.now() - 30000)),
-          orderBy('lastActive', 'desc'),
-          limit(MATCHMAKING_CONFIG.MAX_PLAYERS_PER_QUERY)
-        );
-
-        const unsubscribe = onSnapshot(q, 
-          (snapshot) => {
-            const onlinePlayers = snapshot.docs
-              .map(doc => ({ uid: doc.id, ...doc.data() } as MatchmakingPlayer))
-              .filter(player => player.uid !== user.uid);
-            setPlayers(onlinePlayers);
-            setLoading(false);
-          },
-          (error) => {
-            handleError(error, 'realtime-updates');
-          }
-        );
-
-        return unsubscribe;
-      } catch (error) {
-        handleError(error, 'setup-realtime-updates');
-        return () => {};
-      }
-    };
-
-    const unsubscribe = setupRealtimeUpdates();
-    return () => {
-      unsubscribe.then(unsub => unsub());
-    };
-  }, [user, initializePlayer]);
 
   // Enhanced loading state UI with more detail
   if (loading) {
@@ -565,6 +586,9 @@ export default function Queue() {
         <div className="relative">
           <div className="mb-2 text-sm text-cyber-blue">
             {connectionStatus}
+          </div>
+          <div className="mb-2 text-sm text-cyber-green">
+            Online Players: {onlineCount}
           </div>
           {lastError && !error && (
             <div className="mb-2 text-sm text-cyber-yellow">
