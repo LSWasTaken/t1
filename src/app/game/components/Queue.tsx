@@ -336,39 +336,33 @@ export default function Queue() {
 
       const currentPlayer = playerDoc.data() as MatchmakingPlayer;
 
-      // Get available players
+      // Simplified query to avoid index requirements
       const q = query(
         collection(db, 'players'),
         where('inQueue', '==', true),
         where('status', '==', 'searching'),
-        where('uid', '!=', user.uid),
         limit(MATCHMAKING_CONFIG.MAX_PLAYERS_PER_QUERY)
       );
 
       const snapshot = await getDocs(q);
       const availablePlayers = snapshot.docs
         .map(doc => ({ uid: doc.id, ...doc.data() } as MatchmakingPlayer))
-        .filter(player => !player.currentMatch);
+        .filter(player => 
+          player.uid !== user.uid && 
+          !player.currentMatch &&
+          Math.abs(player.skillRating - currentPlayer.skillRating) <= MATCHMAKING_CONFIG.MAX_SKILL_DIFF
+        );
 
       if (availablePlayers.length === 0) {
         return;
       }
 
-      // Find best match
-      const bestMatch = availablePlayers
-        .filter(player => {
-          const skillDiff = Math.abs(player.skillRating - currentPlayer.skillRating);
-          return skillDiff <= MATCHMAKING_CONFIG.MAX_SKILL_DIFF;
-        })
-        .sort((a, b) => {
-          const skillDiffA = Math.abs(a.skillRating - currentPlayer.skillRating);
-          const skillDiffB = Math.abs(b.skillRating - currentPlayer.skillRating);
-          return skillDiffA - skillDiffB;
-        })[0];
-
-      if (!bestMatch) {
-        return;
-      }
+      // Find best match based on skill rating difference
+      const bestMatch = availablePlayers.reduce((best, current) => {
+        const currentDiff = Math.abs(current.skillRating - currentPlayer.skillRating);
+        const bestDiff = Math.abs(best.skillRating - currentPlayer.skillRating);
+        return currentDiff < bestDiff ? current : best;
+      });
 
       // Create match
       const matchRef = doc(collection(db, 'matches'));
@@ -406,8 +400,18 @@ export default function Queue() {
       await batch.commit();
       cleanup();
       router.push(`/combat?match=${matchRef.id}`);
-    } catch (error) {
-      handleError(error, 'find-match');
+    } catch (error: any) {
+      if (error.code === 'failed-precondition') {
+        // Handle index-related errors
+        setError('Matchmaking system is being updated. Please try again in a moment.');
+        setLastError({ 
+          message: 'The matchmaking system requires an update. Please try again.', 
+          code: error.code 
+        });
+        cleanup();
+      } else {
+        handleError(error, 'find-match');
+      }
     }
   }, [user, inQueue, cleanup, router]);
 
