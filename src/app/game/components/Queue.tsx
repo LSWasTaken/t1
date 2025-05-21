@@ -28,6 +28,8 @@ const QUEUE_CHECK_INTERVAL = 5000; // Check for matches every 5 seconds
 const LAST_ACTIVE_THRESHOLD = 30000; // 30 seconds
 let MAX_SKILL_RATING_DIFF = 500; // Maximum skill rating difference for matchmaking
 const MAX_RETRY_ATTEMPTS = 3; // Maximum number of retry attempts for match creation
+const REGION_PRIORITY = 0.7; // Weight for region matching (0-1)
+const SKILL_PRIORITY = 0.3; // Weight for skill matching (0-1)
 
 async function runWithRetries<T>(
   fn: () => Promise<T>,
@@ -166,19 +168,29 @@ export default function Queue() {
     }
   }, [user, cleanup]);
 
-  // Find best match based on skill rating and region
+  // Find best match based on skill rating and region with weighted scoring
   const findBestMatch = useCallback((availablePlayers: Player[], currentPlayer: Player) => {
     return availablePlayers
       .filter(player => {
         const skillDiff = Math.abs((player.skillRating || 1000) - (currentPlayer.skillRating || 1000));
-        const sameRegion = player.region === currentPlayer.region;
-        return skillDiff <= MAX_SKILL_RATING_DIFF || sameRegion;
+        return skillDiff <= MAX_SKILL_RATING_DIFF;
       })
-      .sort((a, b) => {
-        const aSkillDiff = Math.abs((a.skillRating || 1000) - (currentPlayer.skillRating || 1000));
-        const bSkillDiff = Math.abs((b.skillRating || 1000) - (currentPlayer.skillRating || 1000));
-        return aSkillDiff - bSkillDiff;
-      })[0];
+      .map(player => {
+        const skillDiff = Math.abs((player.skillRating || 1000) - (currentPlayer.skillRating || 1000));
+        const sameRegion = player.region === currentPlayer.region;
+        
+        // Calculate match score (lower is better)
+        const skillScore = skillDiff / MAX_SKILL_RATING_DIFF;
+        const regionScore = sameRegion ? 0 : 1;
+        
+        const totalScore = (skillScore * SKILL_PRIORITY) + (regionScore * REGION_PRIORITY);
+        
+        return {
+          player,
+          score: totalScore
+        };
+      })
+      .sort((a, b) => a.score - b.score)[0]?.player;
   }, []);
 
   // Check for available matches with atomic transaction and improved matching
@@ -225,7 +237,12 @@ export default function Queue() {
             );
 
           if (availablePlayers.length > 0) {
-            const opponent = findBestMatch(availablePlayers, currentPlayer) || availablePlayers[0];
+            const opponent = findBestMatch(availablePlayers, currentPlayer);
+            
+            if (!opponent) {
+              // No suitable match found within skill range
+              return { success: false, reason: 'no_suitable_match' };
+            }
             
             // Verify both players are still available
             const player1Ref = doc(db, 'players', user.uid);
@@ -288,13 +305,17 @@ export default function Queue() {
             return { matchId: matchRef.id, success: true };
           }
 
-          return { success: false };
+          return { success: false, reason: 'no_players' };
         });
       });
 
       if (result.success) {
         cleanup();
         router.push(`/combat?match=${result.matchId}`);
+      } else if (result.reason === 'no_suitable_match') {
+        // Increase skill rating difference threshold if no suitable match found
+        MAX_SKILL_RATING_DIFF = Math.min(2000, MAX_SKILL_RATING_DIFF + 100);
+        setMatchmakingStatus('Expanding search parameters...');
       }
     } catch (error: any) {
       console.error('Error checking for matches:', error);
