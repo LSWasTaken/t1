@@ -132,10 +132,10 @@ export default function Queue() {
   const updatePlayerStatus = useCallback(async (status: string, inQueue: boolean) => {
     if (!user) return;
 
-    await runWithRetries(async () => {
-      await runTransaction(db, async (transaction) => {
+    try {
+      await runWithRetries(async () => {
         const playerRef = doc(db, 'players', user.uid);
-        const playerDoc = await transaction.get(playerRef);
+        const playerDoc = await getDoc(playerRef);
 
         if (!playerDoc.exists()) {
           throw new Error('Player document not found');
@@ -146,15 +146,24 @@ export default function Queue() {
           throw new Error('Too many status updates');
         }
 
-        transaction.update(playerRef, {
+        // Use updateDoc instead of transaction for simpler updates
+        await updateDoc(playerRef, {
           status,
           inQueue,
           lastActive: serverTimestamp(),
           lastQueueUpdate: serverTimestamp()
         });
-      });
-    });
-  }, [user]);
+      }, 5, 1000); // Increased retry attempts and base delay
+    } catch (error: any) {
+      console.error('Error updating player status:', error);
+      if (error.message === 'Too many status updates') {
+        // Silently ignore rate limit errors
+        return;
+      }
+      setError('Failed to update player status. Please try again.');
+      cleanup();
+    }
+  }, [user, cleanup]);
 
   // Find best match based on skill rating and region
   const findBestMatch = useCallback((availablePlayers: Player[], currentPlayer: Player) => {
