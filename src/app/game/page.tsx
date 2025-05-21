@@ -138,12 +138,20 @@ export default function GamePage() {
               </div>
             </div>
           </div>
-          <button
-            onClick={() => router.push('/')}
-            className="cyber-button bg-cyber-red hover:bg-red-700 text-white px-6 py-2 rounded-lg font-press-start transition-all duration-300"
-          >
-            Exit Game
-          </button>
+          <div className="flex items-center space-x-4">
+            <button
+              onClick={() => router.push('/game/tanza')}
+              className="cyber-button bg-cyber-yellow hover:bg-yellow-700 text-white px-6 py-2 rounded-lg font-press-start transition-all duration-300"
+            >
+              Tanza Mode
+            </button>
+            <button
+              onClick={() => router.push('/')}
+              className="cyber-button bg-cyber-red hover:bg-red-700 text-white px-6 py-2 rounded-lg font-press-start transition-all duration-300"
+            >
+              Exit Game
+            </button>
+          </div>
         </div>
 
         <div className="bg-cyber-gray rounded-lg p-8 shadow-lg border border-cyber-pink">

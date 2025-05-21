@@ -22,8 +22,8 @@ interface Player {
 }
 
 const DEFAULT_AVATAR = '/default-avatar.svg';
-const MIN_QUEUE_TIME = 60; // Minimum queue time in seconds
-let MAX_QUEUE_TIME = 300; // Maximum queue time in seconds
+const MIN_QUEUE_TIME = 180; // Minimum queue time in seconds (3 minutes)
+let MAX_QUEUE_TIME = 600; // Maximum queue time in seconds (10 minutes)
 const QUEUE_CHECK_INTERVAL = 5000; // Check for matches every 5 seconds
 const LAST_ACTIVE_THRESHOLD = 30000; // 30 seconds
 let MAX_SKILL_RATING_DIFF = 500; // Maximum skill rating difference for matchmaking
@@ -96,6 +96,7 @@ export default function Queue() {
     setQueueStartTime(null);
     setQueueTime(0);
     setRetryCount(0);
+    setMatchmakingStatus('');
   }, []);
 
   // Create or update player document atomically
@@ -413,6 +414,7 @@ export default function Queue() {
     try {
       const newQueueState = !inQueue;
       
+      // Update local state first for immediate feedback
       setInQueue(newQueueState);
       setSearching(newQueueState);
       
@@ -423,19 +425,41 @@ export default function Queue() {
         MAX_SKILL_RATING_DIFF = 500;
       }
 
+      // Update Firestore status
       await updatePlayerStatus(newQueueState ? 'searching' : 'online', newQueueState);
 
       if (newQueueState) {
+        // Start checking for matches
         await checkForMatches();
       } else {
         cleanup();
       }
     } catch (error) {
       console.error('Error toggling queue:', error);
-      setError('Failed to update queue status');
+      // Revert state on error
+      setInQueue(false);
+      setSearching(false);
+      setQueueStartTime(null);
+      setQueueTime(0);
+      setMatchmakingStatus('');
+      setError('Failed to update queue status. Please try again.');
       cleanup();
     }
   };
+
+  // Add a useEffect to monitor queue state changes
+  useEffect(() => {
+    if (inQueue && !searching) {
+      setSearching(true);
+    }
+  }, [inQueue]);
+
+  // Add a useEffect to handle cleanup on unmount
+  useEffect(() => {
+    return () => {
+      cleanup();
+    };
+  }, [cleanup]);
 
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
