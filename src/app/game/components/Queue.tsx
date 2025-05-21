@@ -127,7 +127,9 @@ const MATCHMAKING_CONFIG = {
   MAX_PLAYERS_PER_QUERY: 50, // Maximum players to fetch at once
   REGIONS: ['global', 'na', 'eu', 'asia'] as const,
   DEFAULT_SKILL: 1000,
-  DEFAULT_REGION: 'global'
+  DEFAULT_REGION: 'global',
+  ONLINE_UPDATE_INTERVAL: 10000, // Update online players every 10 seconds
+  LAST_ACTIVE_THRESHOLD: 30000 // 30 seconds
 } as const;
 
 type Region = typeof MATCHMAKING_CONFIG.REGIONS[number];
@@ -161,12 +163,13 @@ export default function Queue() {
   const [isReconnecting, setIsReconnecting] = useState(false);
   const [searching, setSearching] = useState(false);
   const [onlineCount, setOnlineCount] = useState(0);
-  const [lastActiveThreshold] = useState(30000); // 30 seconds
+  const [lastOnlineUpdate, setLastOnlineUpdate] = useState(0);
   
   const queueTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const matchCheckIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const lastUpdateRef = useRef<number>(0);
+  const onlineUpdateTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // Cleanup function
   const cleanup = useCallback(() => {
@@ -219,6 +222,13 @@ export default function Queue() {
           power: 0
         };
         await setDoc(playerRef, newPlayerData);
+        setPlayers([newPlayerData]);
+      } else {
+        // Update lastActive for existing players
+        await updateDoc(playerRef, {
+          lastActive: serverTimestamp(),
+          status: 'online'
+        });
       }
     } catch (error) {
       handleError(error, 'initialize-player');
@@ -324,7 +334,7 @@ export default function Queue() {
     }
   }, [user]);
 
-  // Real-time player updates with online count
+  // Optimized real-time player updates with rate limiting
   useEffect(() => {
     if (!user) return;
 
@@ -333,42 +343,84 @@ export default function Queue() {
         await initializePlayer();
         setConnectionStatus(STATUS_MESSAGES.CONNECTED);
 
-        // Query for all active players
-        const q = query(
-          collection(db, 'players'),
-          where('lastActive', '>', new Date(Date.now() - lastActiveThreshold)),
-          orderBy('lastActive', 'desc')
-        );
+        // Initial fetch
+        await updateOnlinePlayers();
 
-        const unsubscribe = onSnapshot(q, 
-          (snapshot) => {
-            const onlinePlayers = snapshot.docs
-              .map(doc => ({ uid: doc.id, ...doc.data() } as MatchmakingPlayer))
-              .filter(player => player.uid !== user.uid);
-            
-            setPlayers(onlinePlayers);
-            setOnlineCount(onlinePlayers.length);
-            setLoading(false);
-          },
-          (error) => {
-            handleError(error, 'realtime-updates');
+        // Set up periodic updates
+        onlineUpdateTimeoutRef.current = setInterval(updateOnlinePlayers, MATCHMAKING_CONFIG.ONLINE_UPDATE_INTERVAL);
+
+        return () => {
+          if (onlineUpdateTimeoutRef.current) {
+            clearInterval(onlineUpdateTimeoutRef.current);
           }
-        );
-
-        return unsubscribe;
+        };
       } catch (error) {
         handleError(error, 'setup-realtime-updates');
         return () => {};
       }
     };
 
+    const updateOnlinePlayers = async () => {
+      const now = Date.now();
+      if (now - lastOnlineUpdate < MATCHMAKING_CONFIG.ONLINE_UPDATE_INTERVAL) {
+        return; // Skip if not enough time has passed
+      }
+
+      try {
+        // Update current player's lastActive
+        if (user) {
+          const playerRef = doc(db, 'players', user.uid);
+          await updateDoc(playerRef, {
+            lastActive: serverTimestamp()
+          });
+        }
+
+        const q = query(
+          collection(db, 'players'),
+          where('lastActive', '>', new Date(now - MATCHMAKING_CONFIG.LAST_ACTIVE_THRESHOLD)),
+          orderBy('lastActive', 'desc'),
+          limit(MATCHMAKING_CONFIG.MAX_PLAYERS_PER_QUERY)
+        );
+
+        const snapshot = await getDocs(q);
+        const onlinePlayers = snapshot.docs
+          .map(doc => ({ uid: doc.id, ...doc.data() } as MatchmakingPlayer))
+          .filter(player => player.uid !== user.uid);
+        
+        setPlayers(onlinePlayers);
+        setOnlineCount(onlinePlayers.length);
+        setLastOnlineUpdate(now);
+        setLoading(false);
+      } catch (error) {
+        handleError(error, 'update-online-players');
+      }
+    };
+
     const unsubscribe = setupRealtimeUpdates();
     return () => {
       unsubscribe.then(unsub => unsub());
+      if (onlineUpdateTimeoutRef.current) {
+        clearInterval(onlineUpdateTimeoutRef.current);
+      }
     };
-  }, [user, initializePlayer, lastActiveThreshold]);
+  }, [user, initializePlayer, lastOnlineUpdate]);
 
-  // Find match with improved matching logic
+  // Add cleanup effect for when component unmounts
+  useEffect(() => {
+    return () => {
+      if (user) {
+        const playerRef = doc(db, 'players', user.uid);
+        updateDoc(playerRef, {
+          status: 'offline',
+          lastActive: serverTimestamp()
+        }).catch(error => {
+          console.error('Error updating player status on unmount:', error);
+        });
+      }
+    };
+  }, [user]);
+
+  // Optimized match finding with caching
   const findMatch = useCallback(async () => {
     if (!user || !inQueue) return;
 
@@ -382,88 +434,56 @@ export default function Queue() {
 
       const currentPlayer = playerDoc.data() as MatchmakingPlayer;
 
-      // Get available players with simpler query
-      const q = query(
-        collection(db, 'players'),
-        where('inQueue', '==', true),
-        where('status', '==', 'searching'),
-        limit(MATCHMAKING_CONFIG.MAX_PLAYERS_PER_QUERY)
-      );
-
-      const snapshot = await getDocs(q);
-      const availablePlayers = snapshot.docs
-        .map(doc => ({ uid: doc.id, ...doc.data() } as MatchmakingPlayer))
+      // Use existing online players list first
+      const availablePlayers = players
         .filter(player => 
-          player.uid !== user.uid && 
+          player.inQueue && 
+          player.status === 'searching' &&
           !player.currentMatch &&
           Math.abs(player.skillRating - currentPlayer.skillRating) <= MATCHMAKING_CONFIG.MAX_SKILL_DIFF
         );
 
       if (availablePlayers.length === 0) {
-        // Update matchmaking status to show no matches found
-        setMatchmakingStatus('No suitable matches found. Expanding search...');
-        return;
+        // Only query Firestore if no matches found in cached list
+        const q = query(
+          collection(db, 'players'),
+          where('inQueue', '==', true),
+          where('status', '==', 'searching'),
+          limit(MATCHMAKING_CONFIG.MAX_PLAYERS_PER_QUERY)
+        );
+
+        const snapshot = await getDocs(q);
+        const firestorePlayers = snapshot.docs
+          .map(doc => ({ uid: doc.id, ...doc.data() } as MatchmakingPlayer))
+          .filter(player => 
+            player.uid !== user.uid && 
+            !player.currentMatch &&
+            Math.abs(player.skillRating - currentPlayer.skillRating) <= MATCHMAKING_CONFIG.MAX_SKILL_DIFF
+          );
+
+        if (firestorePlayers.length === 0) {
+          setMatchmakingStatus('No suitable matches found. Expanding search...');
+          return;
+        }
+
+        // Use the best match from Firestore results
+        const bestMatch = firestorePlayers.reduce((best, current) => {
+          const currentDiff = Math.abs(current.skillRating - currentPlayer.skillRating);
+          const bestDiff = Math.abs(best.skillRating - currentPlayer.skillRating);
+          return currentDiff < bestDiff ? current : best;
+        });
+
+        await createMatch(currentPlayer, bestMatch);
+      } else {
+        // Use the best match from cached results
+        const bestMatch = availablePlayers.reduce((best, current) => {
+          const currentDiff = Math.abs(current.skillRating - currentPlayer.skillRating);
+          const bestDiff = Math.abs(best.skillRating - currentPlayer.skillRating);
+          return currentDiff < bestDiff ? current : best;
+        });
+
+        await createMatch(currentPlayer, bestMatch);
       }
-
-      // Find best match based on skill rating difference
-      const bestMatch = availablePlayers.reduce((best, current) => {
-        const currentDiff = Math.abs(current.skillRating - currentPlayer.skillRating);
-        const bestDiff = Math.abs(best.skillRating - currentPlayer.skillRating);
-        return currentDiff < bestDiff ? current : best;
-      });
-
-      // Create match with transaction to ensure atomicity
-      const matchRef = doc(collection(db, 'matches'));
-      const matchData = {
-        player1Id: user.uid,
-        player2Id: bestMatch.uid,
-        player1Username: currentPlayer.username,
-        player2Username: bestMatch.username,
-        player1SkillRating: currentPlayer.skillRating,
-        player2SkillRating: bestMatch.skillRating,
-        status: 'in_progress',
-        createdAt: serverTimestamp(),
-        winner: null,
-        moves: [],
-        lastMove: null,
-        lastUpdate: serverTimestamp()
-      };
-
-      // Use transaction to ensure both players are updated atomically
-      await runTransaction(db, async (transaction) => {
-        // Check if players are still available
-        const player1Doc = await transaction.get(playerRef);
-        const player2Doc = await transaction.get(doc(db, 'players', bestMatch.uid));
-
-        if (!player1Doc.exists() || !player2Doc.exists()) {
-          throw new Error('One or both players no longer available');
-        }
-
-        const player1Data = player1Doc.data() as MatchmakingPlayer;
-        const player2Data = player2Doc.data() as MatchmakingPlayer;
-
-        if (!player1Data.inQueue || !player2Data.inQueue) {
-          throw new Error('One or both players left the queue');
-        }
-
-        // Create match and update players
-        transaction.set(matchRef, matchData);
-        transaction.update(playerRef, {
-          inQueue: false,
-          currentMatch: matchRef.id,
-          status: 'in_match',
-          lastActive: serverTimestamp()
-        });
-        transaction.update(doc(db, 'players', bestMatch.uid), {
-          inQueue: false,
-          currentMatch: matchRef.id,
-          status: 'in_match',
-          lastActive: serverTimestamp()
-        });
-      });
-
-      cleanup();
-      router.push(`/combat?match=${matchRef.id}`);
     } catch (error: any) {
       if (error.code === 'failed-precondition') {
         setError('Matchmaking system is being updated. Please try again in a moment.');
@@ -476,7 +496,59 @@ export default function Queue() {
         handleError(error, 'find-match');
       }
     }
-  }, [user, inQueue, cleanup, router]);
+  }, [user, inQueue, cleanup, router, players]);
+
+  // Helper function to create match
+  const createMatch = async (currentPlayer: MatchmakingPlayer, bestMatch: MatchmakingPlayer) => {
+    const matchRef = doc(collection(db, 'matches'));
+    const matchData = {
+      player1Id: user!.uid,
+      player2Id: bestMatch.uid,
+      player1Username: currentPlayer.username,
+      player2Username: bestMatch.username,
+      player1SkillRating: currentPlayer.skillRating,
+      player2SkillRating: bestMatch.skillRating,
+      status: 'in_progress',
+      createdAt: serverTimestamp(),
+      winner: null,
+      moves: [],
+      lastMove: null,
+      lastUpdate: serverTimestamp()
+    };
+
+    await runTransaction(db, async (transaction) => {
+      const player1Doc = await transaction.get(doc(db, 'players', user!.uid));
+      const player2Doc = await transaction.get(doc(db, 'players', bestMatch.uid));
+
+      if (!player1Doc.exists() || !player2Doc.exists()) {
+        throw new Error('One or both players no longer available');
+      }
+
+      const player1Data = player1Doc.data() as MatchmakingPlayer;
+      const player2Data = player2Doc.data() as MatchmakingPlayer;
+
+      if (!player1Data.inQueue || !player2Data.inQueue) {
+        throw new Error('One or both players left the queue');
+      }
+
+      transaction.set(matchRef, matchData);
+      transaction.update(doc(db, 'players', user!.uid), {
+        inQueue: false,
+        currentMatch: matchRef.id,
+        status: 'in_match',
+        lastActive: serverTimestamp()
+      });
+      transaction.update(doc(db, 'players', bestMatch.uid), {
+        inQueue: false,
+        currentMatch: matchRef.id,
+        status: 'in_match',
+        lastActive: serverTimestamp()
+      });
+    });
+
+    cleanup();
+    router.push(`/combat?match=${matchRef.id}`);
+  };
 
   // Queue timer effect
   useEffect(() => {
