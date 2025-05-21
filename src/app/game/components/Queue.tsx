@@ -30,6 +30,69 @@ let MAX_SKILL_RATING_DIFF = 500; // Maximum skill rating difference for matchmak
 const MAX_RETRY_ATTEMPTS = 3; // Maximum number of retry attempts for match creation
 const REGION_PRIORITY = 0.7; // Weight for region matching (0-1)
 const SKILL_PRIORITY = 0.3; // Weight for skill matching (0-1)
+const MAX_RECONNECT_ATTEMPTS = 5;
+const INITIAL_RECONNECT_DELAY = 1000; // Start with 1 second
+const MAX_RECONNECT_DELAY = 10000; // Max 10 seconds
+
+type FirebaseErrorCode = 
+  | 'permission-denied'
+  | 'resource-exhausted'
+  | 'unavailable'
+  | 'deadline-exceeded'
+  | 'failed-precondition'
+  | 'aborted'
+  | 'already-exists'
+  | 'not-found'
+  | 'internal'
+  | 'unimplemented'
+  | 'unauthenticated'
+  | 'invalid-argument';
+
+const STATUS_MESSAGES = {
+  // Connection States
+  CONNECTING: 'Connecting to game server...',
+  CONNECTED: 'Connected to game server',
+  DISCONNECTED: 'Disconnected from game server',
+  RECONNECTING: 'Reconnecting to game server...',
+  RECONNECT_ATTEMPT: (attempt: number) => `Reconnection attempt ${attempt}/${MAX_RECONNECT_ATTEMPTS}...`,
+  
+  // Queue States
+  QUEUE_SEARCHING: 'Searching for opponents...',
+  QUEUE_EXPANDING: 'Expanding search parameters...',
+  QUEUE_WAITING: 'Waiting for more players...',
+  QUEUE_SKILL_EXPAND: (diff: number) => `Expanding skill range to ±${diff} points...`,
+  QUEUE_REGION_EXPAND: 'Searching in all regions...',
+  
+  // Error Messages
+  ERROR_CONNECTION: 'Connection error. Attempting to reconnect...',
+  ERROR_PERMISSION: 'Permission denied. Please check your account.',
+  ERROR_RATE_LIMIT: 'Too many requests. Please wait a moment.',
+  ERROR_UNKNOWN: 'An unexpected error occurred. Please try again.',
+  ERROR_FIREBASE: {
+    'permission-denied': 'Access denied. Please check your account permissions.',
+    'resource-exhausted': 'Rate limit exceeded. Please wait a moment.',
+    'unavailable': 'Service temporarily unavailable. Retrying...',
+    'deadline-exceeded': 'Request timed out. Retrying...',
+    'failed-precondition': 'Invalid operation state. Please refresh.',
+    'aborted': 'Operation aborted. Retrying...',
+    'already-exists': 'Resource already exists. Please refresh.',
+    'not-found': 'Resource not found. Please refresh.',
+    'internal': 'Internal server error. Please try again.',
+    'unimplemented': 'Feature not implemented. Please contact support.',
+    'unauthenticated': 'Please sign in to continue.',
+    'invalid-argument': 'Invalid request. Please refresh.',
+  } as const,
+  
+  // Success Messages
+  SUCCESS_CONNECTED: 'Successfully connected to game server',
+  SUCCESS_QUEUE_JOINED: 'Successfully joined matchmaking queue',
+  SUCCESS_QUEUE_LEFT: 'Successfully left matchmaking queue',
+  
+  // Loading States
+  LOADING_PLAYERS: 'Loading player data...',
+  LOADING_MATCH: 'Finding match...',
+  LOADING_UPDATE: 'Updating status...',
+};
 
 async function runWithRetries<T>(
   fn: () => Promise<T>,
@@ -71,6 +134,11 @@ export default function Queue() {
   const lastUpdateRef = useRef<number>(0);
   const queueTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const matchmakingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const [connectionStatus, setConnectionStatus] = useState<string>(STATUS_MESSAGES.CONNECTING);
+  const [reconnectAttempts, setReconnectAttempts] = useState(0);
+  const [isReconnecting, setIsReconnecting] = useState(false);
+  const [lastError, setLastError] = useState<{message: string; code?: string} | null>(null);
+  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // Memoized query for better performance
   const queueQuery = useMemo(() => {
@@ -93,12 +161,18 @@ export default function Queue() {
       clearTimeout(matchmakingTimeoutRef.current);
       matchmakingTimeoutRef.current = null;
     }
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
+    }
     setInQueue(false);
     setSearching(false);
     setQueueStartTime(null);
     setQueueTime(0);
     setRetryCount(0);
     setMatchmakingStatus('');
+    setReconnectAttempts(0);
+    setIsReconnecting(false);
   }, []);
 
   // Create or update player document atomically
@@ -124,6 +198,12 @@ export default function Queue() {
           region: 'global' // Default region
         };
         await setDoc(playerRef, newPlayerData);
+      } else {
+        // Update last active timestamp
+        await updateDoc(playerRef, {
+          lastActive: serverTimestamp(),
+          status: 'online'
+        });
       }
     } catch (error) {
       console.error('Error ensuring player document:', error);
@@ -334,136 +414,179 @@ export default function Queue() {
     }
   }, [user, inQueue, router, queueQuery, findBestMatch, queueTime, cleanup]);
 
-  // Real-time player updates with optimized query
+  // Enhanced reconnection mechanism with exponential backoff
+  const attemptReconnect = useCallback(async () => {
+    if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+      setError('Failed to connect after multiple attempts. Please refresh the page.');
+      setIsReconnecting(false);
+      return;
+    }
+
+    setIsReconnecting(true);
+    const currentAttempt = reconnectAttempts + 1;
+    setReconnectAttempts(currentAttempt);
+    setConnectionStatus(STATUS_MESSAGES.RECONNECT_ATTEMPT(currentAttempt));
+
+    try {
+      await ensurePlayerDocument();
+      setConnectionStatus(STATUS_MESSAGES.SUCCESS_CONNECTED);
+      setIsReconnecting(false);
+      setReconnectAttempts(0);
+      setLastError(null);
+    } catch (error) {
+      console.error('Reconnection attempt failed:', error);
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+      }
+      
+      // Exponential backoff with jitter
+      const delay = Math.min(
+        INITIAL_RECONNECT_DELAY * Math.pow(2, currentAttempt) + Math.random() * 1000,
+        MAX_RECONNECT_DELAY
+      );
+      
+      reconnectTimeoutRef.current = setTimeout(attemptReconnect, delay);
+    }
+  }, [reconnectAttempts, ensurePlayerDocument]);
+
+  // Enhanced error handling with specific messages
+  const handleError = useCallback((error: any, context: string) => {
+    console.error(`Error in ${context}:`, error);
+    
+    const errorCode = error.code as FirebaseErrorCode;
+    const errorMessage = errorCode && STATUS_MESSAGES.ERROR_FIREBASE[errorCode]
+      ? STATUS_MESSAGES.ERROR_FIREBASE[errorCode]
+      : STATUS_MESSAGES.ERROR_UNKNOWN;
+    
+    setLastError({ message: errorMessage, code: errorCode });
+    
+    if (errorCode === 'permission-denied') {
+      setError(errorMessage);
+    } else if (errorCode === 'resource-exhausted') {
+      setError(errorMessage);
+    } else if (errorCode === 'unavailable' || errorCode === 'deadline-exceeded') {
+      setConnectionStatus(STATUS_MESSAGES.ERROR_CONNECTION);
+      attemptReconnect();
+    } else {
+      setError(errorMessage);
+    }
+  }, [attemptReconnect]);
+
+  // Enhanced real-time updates with reconnection
   useEffect(() => {
     if (!user) return;
 
-    ensurePlayerDocument();
+    let unsubscribe: (() => void) | undefined;
 
-    const updateLastActive = async () => {
+    const setupRealtimeUpdates = async () => {
       try {
-        if (Date.now() - lastUpdateRef.current < LAST_ACTIVE_THRESHOLD) {
-          return;
-        }
-        await updatePlayerStatus(inQueue ? 'searching' : 'online', inQueue);
-        lastUpdateRef.current = Date.now();
+        await ensurePlayerDocument();
+        setConnectionStatus(STATUS_MESSAGES.CONNECTED);
+
+        const updateLastActive = async () => {
+          try {
+            if (Date.now() - lastUpdateRef.current < LAST_ACTIVE_THRESHOLD) {
+              return;
+            }
+            await updatePlayerStatus(inQueue ? 'searching' : 'online', inQueue);
+            lastUpdateRef.current = Date.now();
+          } catch (error) {
+            handleError(error, 'updateLastActive');
+          }
+        };
+
+        const interval = setInterval(updateLastActive, LAST_ACTIVE_THRESHOLD);
+        updateLastActive();
+
+        const q = query(
+          collection(db, 'players'),
+          where('lastActive', '>', new Date(Date.now() - LAST_ACTIVE_THRESHOLD)),
+          orderBy('lastActive', 'desc'),
+          limit(50)
+        );
+
+        unsubscribe = onSnapshot(q, 
+          (snapshot) => {
+            const onlinePlayers = snapshot.docs
+              .map(doc => ({ uid: doc.id, ...doc.data() } as Player))
+              .filter(player => 
+                player.uid !== user.uid && 
+                player.lastActive?.toMillis() > Date.now() - LAST_ACTIVE_THRESHOLD
+              );
+            setPlayers(onlinePlayers);
+            setLoading(false);
+            setConnectionStatus(STATUS_MESSAGES.CONNECTED);
+          },
+          (error) => {
+            handleError(error, 'realtime-updates');
+          }
+        );
+        
+        return () => {
+          clearInterval(interval);
+          if (unsubscribe) unsubscribe();
+          cleanup();
+        };
       } catch (error) {
-        console.error('Error updating last active:', error);
+        handleError(error, 'setup-realtime-updates');
       }
     };
 
-    const interval = setInterval(updateLastActive, LAST_ACTIVE_THRESHOLD);
-    updateLastActive();
+    setupRealtimeUpdates();
 
-    // Listen for online players with optimized query
-    const q = query(
-      collection(db, 'players'),
-      where('lastActive', '>', new Date(Date.now() - LAST_ACTIVE_THRESHOLD)),
-      orderBy('lastActive', 'desc'),
-      limit(50) // Limit to 50 players for better performance
-    );
-
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const onlinePlayers = snapshot.docs
-        .map(doc => ({ uid: doc.id, ...doc.data() } as Player))
-        .filter(player => 
-          player.uid !== user.uid && 
-          player.lastActive?.toMillis() > Date.now() - LAST_ACTIVE_THRESHOLD
-        );
-      setPlayers(onlinePlayers);
-      setLoading(false);
-    });
-    
     return () => {
-      clearInterval(interval);
-      unsubscribe();
+      if (unsubscribe) unsubscribe();
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+      }
       cleanup();
     };
-  }, [user, inQueue, ensurePlayerDocument, updatePlayerStatus, cleanup]);
+  }, [user, inQueue, ensurePlayerDocument, updatePlayerStatus, cleanup, handleError]);
 
-  // Queue timer effect with atomic updates and progressive matchmaking
+  // Enhanced queue status messages with more detail
   useEffect(() => {
-    let timer: NodeJS.Timeout;
     if (searching && queueStartTime) {
-      timer = setInterval(async () => {
-        const elapsedTime = Math.floor((Date.now() - queueStartTime) / 1000);
-        setQueueTime(elapsedTime);
-
-        // Progressive matchmaking status
-        if (elapsedTime < MIN_QUEUE_TIME) {
-          setMatchmakingStatus('Finding optimal opponent...');
-        } else if (elapsedTime < MAX_QUEUE_TIME) {
-          setMatchmakingStatus('Expanding search parameters...');
-          // Increase skill rating difference threshold
-          MAX_SKILL_RATING_DIFF = Math.min(1000, MAX_SKILL_RATING_DIFF + 100);
-        } else {
-          setMatchmakingStatus('Searching in all regions...');
-          // Remove region restriction
-          MAX_SKILL_RATING_DIFF = 2000;
-        }
-
-        try {
-          await updatePlayerStatus('searching', true);
-        } catch (error) {
-          console.error('Error updating queue status:', error);
-          cleanup();
-        }
-      }, 1000);
-    } else {
-      setQueueTime(0);
-      setQueueStartTime(null);
-      setMatchmakingStatus('');
+      const elapsedTime = Math.floor((Date.now() - queueStartTime) / 1000);
+      
+      if (elapsedTime < MIN_QUEUE_TIME) {
+        setMatchmakingStatus(STATUS_MESSAGES.QUEUE_SEARCHING);
+      } else if (elapsedTime < MAX_QUEUE_TIME) {
+        const newSkillDiff = Math.min(1000, MAX_SKILL_RATING_DIFF + 100);
+        setMatchmakingStatus(STATUS_MESSAGES.QUEUE_SKILL_EXPAND(newSkillDiff));
+        MAX_SKILL_RATING_DIFF = newSkillDiff;
+      } else {
+        setMatchmakingStatus(STATUS_MESSAGES.QUEUE_REGION_EXPAND);
+        MAX_SKILL_RATING_DIFF = 2000;
+      }
     }
-    return () => clearInterval(timer);
-  }, [searching, queueStartTime, updatePlayerStatus, cleanup]);
+  }, [searching, queueStartTime]);
 
-  // Check for matches periodically with exponential backoff
-  useEffect(() => {
-    let matchCheckInterval: NodeJS.Timeout;
-    if (inQueue && searching) {
-      const checkInterval = Math.min(QUEUE_CHECK_INTERVAL * Math.pow(1.5, retryCount), 30000);
-      matchCheckInterval = setInterval(checkForMatches, checkInterval);
-    }
-    return () => {
-      if (matchCheckInterval) clearInterval(matchCheckInterval);
-    };
-  }, [inQueue, searching, checkForMatches, retryCount]);
-
+  // Enhanced toggle queue with better feedback
   const toggleQueue = async () => {
     if (!user) return;
 
     try {
       const newQueueState = !inQueue;
       
-      // Update local state first for immediate feedback
       setInQueue(newQueueState);
       setSearching(newQueueState);
       
       if (newQueueState) {
         setQueueStartTime(Date.now());
-        setMatchmakingStatus('Finding optimal opponent...');
-        // Reset skill rating difference threshold
+        setMatchmakingStatus(STATUS_MESSAGES.QUEUE_SEARCHING);
         MAX_SKILL_RATING_DIFF = 500;
       }
 
-      // Update Firestore status
       await updatePlayerStatus(newQueueState ? 'searching' : 'online', newQueueState);
+      setConnectionStatus(newQueueState ? STATUS_MESSAGES.SUCCESS_QUEUE_JOINED : STATUS_MESSAGES.SUCCESS_QUEUE_LEFT);
 
       if (newQueueState) {
-        // Start checking for matches
         await checkForMatches();
       } else {
         cleanup();
       }
     } catch (error) {
-      console.error('Error toggling queue:', error);
-      // Revert state on error
-      setInQueue(false);
-      setSearching(false);
-      setQueueStartTime(null);
-      setQueueTime(0);
-      setMatchmakingStatus('');
-      setError('Failed to update queue status. Please try again.');
+      handleError(error, 'toggle-queue');
       cleanup();
     }
   };
@@ -488,15 +611,22 @@ export default function Queue() {
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
+  // Enhanced loading state UI with more detail
   if (loading) {
     return (
       <div className="text-center p-4">
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-cyber-pink mx-auto"></div>
-        <p className="text-cyber-blue mt-2">Loading players...</p>
+        <p className="text-cyber-blue mt-2">{connectionStatus}</p>
+        {lastError && (
+          <p className="text-cyber-red text-sm mt-2">
+            Last error: {lastError.message}
+          </p>
+        )}
       </div>
     );
   }
 
+  // Enhanced error state UI with more options
   if (error) {
     return (
       <motion.div 
@@ -505,17 +635,37 @@ export default function Queue() {
         className="text-center p-4"
       >
         <p className="text-cyber-red">{error}</p>
-        <button
-          onClick={() => {
-            setError(null);
-            setInQueue(false);
-            setSearching(false);
-            setQueueStartTime(null);
-          }}
-          className="mt-2 px-4 py-2 bg-cyber-pink text-white rounded-lg hover:bg-pink-700 transition-colors"
-        >
-          Retry
-        </button>
+        {lastError?.code && (
+          <p className="text-cyber-blue text-sm mt-1">
+            Error code: {lastError.code}
+          </p>
+        )}
+        <div className="mt-4 space-x-4">
+          <button
+            onClick={() => {
+              setError(null);
+              attemptReconnect();
+            }}
+            className="px-4 py-2 bg-cyber-pink text-white rounded-lg hover:bg-pink-700 transition-colors"
+          >
+            Retry Connection
+          </button>
+          <button
+            onClick={() => {
+              setError(null);
+              cleanup();
+            }}
+            className="px-4 py-2 bg-cyber-blue text-white rounded-lg hover:bg-blue-700 transition-colors"
+          >
+            Reset
+          </button>
+          <button
+            onClick={() => window.location.reload()}
+            className="px-4 py-2 bg-cyber-yellow text-white rounded-lg hover:bg-yellow-700 transition-colors"
+          >
+            Refresh Page
+          </button>
+        </div>
       </motion.div>
     );
   }
@@ -530,19 +680,32 @@ export default function Queue() {
         <h2 className="text-2xl font-press-start text-cyber-pink mb-4">Matchmaking</h2>
         
         <div className="relative">
+          <div className="mb-2 text-sm text-cyber-blue">
+            {connectionStatus}
+          </div>
+          {lastError && !error && (
+            <div className="mb-2 text-sm text-cyber-yellow">
+              Last error: {lastError.message}
+            </div>
+          )}
           <button
             onClick={toggleQueue}
-            disabled={searching}
+            disabled={searching || isReconnecting}
             className={`w-full px-6 py-3 rounded-lg font-press-start transition-all duration-300 ${
               inQueue
                 ? 'bg-cyber-red text-white hover:bg-red-700'
                 : 'bg-cyber-pink text-white hover:bg-pink-700'
-            } ${searching ? 'opacity-50 cursor-not-allowed' : ''}`}
+            } ${(searching || isReconnecting) ? 'opacity-50 cursor-not-allowed' : ''}`}
           >
             {searching ? (
               <div className="flex items-center justify-center space-x-2">
                 <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
                 <span>Searching... {formatTime(queueTime)}</span>
+              </div>
+            ) : isReconnecting ? (
+              <div className="flex items-center justify-center space-x-2">
+                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                <span>Reconnecting... ({reconnectAttempts}/{MAX_RECONNECT_ATTEMPTS})</span>
               </div>
             ) : (
               inQueue ? 'Leave Queue' : 'Join Queue'
@@ -587,6 +750,9 @@ export default function Queue() {
                     <div>
                       <p className="text-cyber-pink font-press-start">{player.username}</p>
                       <p className="text-cyber-blue text-sm">Power: {player.power}</p>
+                      {player.skillRating && (
+                        <p className="text-cyber-blue text-sm">Skill: {player.skillRating}</p>
+                      )}
                     </div>
                   </div>
                   {player.inQueue && (
