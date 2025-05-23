@@ -16,19 +16,19 @@ import { app } from './firebase';
 interface AuthContextType {
   user: User | null;
   loading: boolean;
-  signIn: (email: string, password: string) => Promise<void>;
-  signUp: (email: string, password: string) => Promise<void>;
+  signIn: (email: string, password: string) => Promise<User>;
+  signUp: (email: string, password: string) => Promise<User>;
   logout: () => Promise<void>;
-  signInWithGithub: () => Promise<void>;
+  signInWithGithub: () => Promise<User>;
 }
 
 const AuthContext = createContext<AuthContextType>({
   user: null,
   loading: true,
-  signIn: async () => {},
-  signUp: async () => {},
+  signIn: async () => { throw new Error('Not implemented'); },
+  signUp: async () => { throw new Error('Not implemented'); },
   logout: async () => {},
-  signInWithGithub: async () => {},
+  signInWithGithub: async () => { throw new Error('Not implemented'); },
 });
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
@@ -47,18 +47,42 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const signIn = async (email: string, password: string) => {
     try {
-      await signInWithEmailAndPassword(auth, email, password);
-    } catch (error) {
+      const userCredential = await signInWithEmailAndPassword(auth, email, password);
+      if (!userCredential.user) {
+        throw new Error('No user returned from sign in');
+      }
+      return userCredential.user;
+    } catch (error: any) {
       console.error('Error signing in:', error);
+      if (error.code === 'auth/invalid-credential') {
+        throw new Error('Invalid email or password');
+      } else if (error.code === 'auth/user-not-found') {
+        throw new Error('No account found with this email');
+      } else if (error.code === 'auth/wrong-password') {
+        throw new Error('Incorrect password');
+      } else if (error.code === 'auth/too-many-requests') {
+        throw new Error('Too many failed attempts. Please try again later');
+      }
       throw error;
     }
   };
 
   const signUp = async (email: string, password: string) => {
     try {
-      await createUserWithEmailAndPassword(auth, email, password);
-    } catch (error) {
+      const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+      if (!userCredential.user) {
+        throw new Error('No user returned from sign up');
+      }
+      return userCredential.user;
+    } catch (error: any) {
       console.error('Error signing up:', error);
+      if (error.code === 'auth/email-already-in-use') {
+        throw new Error('An account already exists with this email');
+      } else if (error.code === 'auth/invalid-email') {
+        throw new Error('Invalid email address');
+      } else if (error.code === 'auth/weak-password') {
+        throw new Error('Password is too weak');
+      }
       throw error;
     }
   };
@@ -75,9 +99,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const signInWithGithub = async () => {
     try {
       const provider = new GithubAuthProvider();
-      await signInWithPopup(auth, provider);
-    } catch (error) {
+      const result = await signInWithPopup(auth, provider);
+      if (!result.user) {
+        throw new Error('No user returned from GitHub sign in');
+      }
+      return result.user;
+    } catch (error: any) {
       console.error('Error signing in with GitHub:', error);
+      if (error.code === 'auth/popup-closed-by-user') {
+        throw new Error('Sign in was cancelled');
+      } else if (error.code === 'auth/popup-blocked') {
+        throw new Error('Pop-up was blocked by the browser');
+      } else if (error.code === 'auth/cancelled-popup-request') {
+        throw new Error('Sign in was cancelled');
+      }
       throw error;
     }
   };
