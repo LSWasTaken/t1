@@ -491,7 +491,11 @@ export default function Queue() {
         await createMatch(currentPlayer, bestMatch);
       }
     } catch (error: any) {
-      if (error.code === 'failed-precondition') {
+      if (error.message && error.message.includes('left the queue')) {
+        setMatchmakingStatus('Opponent left the queue, searching for a new match...');
+        // Optionally, add a short delay before retrying
+        setTimeout(() => findMatch(), 2000);
+      } else if (error.code === 'failed-precondition') {
         setError('Matchmaking system is being updated. Please try again in a moment.');
         setLastError({ 
           message: 'The matchmaking system requires an update. Please try again.', 
