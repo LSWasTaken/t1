@@ -145,6 +145,7 @@ interface MatchmakingPlayer {
   status: 'online' | 'searching' | 'in_match';
   currentMatch?: string | null;
   power: number;
+  pendingChallenge?: string | null;
 }
 
 export default function Queue() {
@@ -211,7 +212,7 @@ export default function Queue() {
       if (!playerDoc.exists()) {
         const newPlayerData: MatchmakingPlayer = {
           uid: user.uid,
-          username: user.displayName || 'Anonymous',
+          username: user.displayName || user.email?.split('@')[0] || 'Anonymous',
           avatar: user.photoURL || DEFAULT_AVATAR,
           skillRating: MATCHMAKING_CONFIG.DEFAULT_SKILL,
           region: MATCHMAKING_CONFIG.DEFAULT_REGION,
@@ -224,10 +225,12 @@ export default function Queue() {
         await setDoc(playerRef, newPlayerData);
         setPlayers([newPlayerData]);
       } else {
-        // Update lastActive for existing players
+        // Update lastActive and status for existing players
         await updateDoc(playerRef, {
           lastActive: serverTimestamp(),
-          status: 'online'
+          status: 'online',
+          inQueue: false,
+          currentMatch: null
         });
       }
     } catch (error) {
@@ -367,17 +370,20 @@ export default function Queue() {
       }
 
       try {
-        // Update current player's lastActive
+        // Update current player's lastActive and status
         if (user) {
           const playerRef = doc(db, 'players', user.uid);
           await updateDoc(playerRef, {
-            lastActive: serverTimestamp()
+            lastActive: serverTimestamp(),
+            status: 'online'
           });
         }
 
+        // Query for online players
         const q = query(
           collection(db, 'players'),
           where('lastActive', '>', new Date(now - MATCHMAKING_CONFIG.LAST_ACTIVE_THRESHOLD)),
+          where('status', '==', 'online'),
           orderBy('lastActive', 'desc'),
           limit(MATCHMAKING_CONFIG.MAX_PLAYERS_PER_QUERY)
         );
@@ -587,6 +593,119 @@ export default function Queue() {
     };
   }, [inQueue, findMatch]);
 
+  // Add challenge function
+  const challengePlayer = async (opponentId: string): Promise<void> => {
+    if (!user) return;
+
+    try {
+      const playerRef = doc(db, 'players', user.uid);
+      const opponentRef = doc(db, 'players', opponentId);
+      
+      await runTransaction(db, async (transaction) => {
+        const playerDoc = await transaction.get(playerRef);
+        const opponentDoc = await transaction.get(opponentRef);
+
+        if (!playerDoc.exists() || !opponentDoc.exists()) {
+          throw new Error('One or both players not found');
+        }
+
+        const playerData = playerDoc.data() as MatchmakingPlayer;
+        const opponentData = opponentDoc.data() as MatchmakingPlayer;
+
+        if (opponentData.status !== 'online' || opponentData.inQueue || opponentData.currentMatch) {
+          throw new Error('Opponent is not available for challenge');
+        }
+
+        // Set pending challenge
+        transaction.update(opponentRef, {
+          pendingChallenge: user.uid
+        });
+
+        setMatchmakingStatus(`Challenge sent to ${opponentData.username}`);
+      });
+    } catch (error) {
+      handleError(error, 'challenge-player');
+    }
+  };
+
+  // Add accept challenge function
+  const acceptChallenge = async (challengerId: string): Promise<void> => {
+    if (!user) return;
+
+    try {
+      const playerRef = doc(db, 'players', user.uid);
+      const challengerRef = doc(db, 'players', challengerId);
+      const matchRef = doc(collection(db, 'matches'));
+      const matchId = matchRef.id;
+      
+      await runTransaction(db, async (transaction) => {
+        const playerDoc = await transaction.get(playerRef);
+        const challengerDoc = await transaction.get(challengerRef);
+
+        if (!playerDoc.exists() || !challengerDoc.exists()) {
+          throw new Error('One or both players not found');
+        }
+
+        const playerData = playerDoc.data() as MatchmakingPlayer;
+        const challengerData = challengerDoc.data() as MatchmakingPlayer;
+
+        if (playerData.pendingChallenge !== challengerId) {
+          throw new Error('Invalid challenge');
+        }
+
+        // Create match
+        const matchData = {
+          player1Id: challengerId,
+          player2Id: user.uid,
+          player1Username: challengerData.username,
+          player2Username: playerData.username,
+          player1SkillRating: challengerData.skillRating,
+          player2SkillRating: playerData.skillRating,
+          status: 'in_progress',
+          createdAt: serverTimestamp(),
+          winner: null,
+          moves: [],
+          lastMove: null,
+          lastUpdate: serverTimestamp()
+        };
+
+        transaction.set(matchRef, matchData);
+        transaction.update(challengerRef, {
+          inQueue: false,
+          currentMatch: matchId,
+          status: 'in_match',
+          lastActive: serverTimestamp()
+        });
+        transaction.update(playerRef, {
+          inQueue: false,
+          currentMatch: matchId,
+          status: 'in_match',
+          lastActive: serverTimestamp(),
+          pendingChallenge: null
+        });
+      });
+
+      cleanup();
+      router.push(`/combat?match=${matchId}`);
+    } catch (error) {
+      handleError(error, 'accept-challenge');
+    }
+  };
+
+  // Add reject challenge function
+  const rejectChallenge = async (challengerId: string): Promise<void> => {
+    if (!user) return;
+
+    try {
+      const playerRef = doc(db, 'players', user.uid);
+      await updateDoc(playerRef, {
+        pendingChallenge: null
+      });
+    } catch (error) {
+      handleError(error, 'reject-challenge');
+    }
+  };
+
   // Enhanced loading state UI with more detail
   if (loading) {
     return (
@@ -734,11 +853,37 @@ export default function Queue() {
                       )}
                     </div>
                   </div>
-                  {player.inQueue && (
-                    <span className="px-2 py-1 bg-cyber-green text-white text-sm rounded animate-pulse">
-                      In Queue
-                    </span>
-                  )}
+                  <div className="flex items-center space-x-2">
+                    {player.inQueue && (
+                      <span className="px-2 py-1 bg-cyber-green text-white text-sm rounded animate-pulse">
+                        In Queue
+                      </span>
+                    )}
+                    {player.uid !== user?.uid && player.status === 'online' && !player.inQueue && !player.currentMatch && (
+                      <button
+                        onClick={() => challengePlayer(player.uid)}
+                        className="px-3 py-1 bg-cyber-yellow text-white text-sm rounded hover:bg-yellow-600 transition-colors"
+                      >
+                        Challenge
+                      </button>
+                    )}
+                    {player.pendingChallenge === user?.uid && (
+                      <div className="flex space-x-2">
+                        <button
+                          onClick={() => acceptChallenge(player.uid)}
+                          className="px-3 py-1 bg-cyber-green text-white text-sm rounded hover:bg-green-600 transition-colors"
+                        >
+                          Accept
+                        </button>
+                        <button
+                          onClick={() => rejectChallenge(player.uid)}
+                          className="px-3 py-1 bg-cyber-red text-white text-sm rounded hover:bg-red-600 transition-colors"
+                        >
+                          Reject
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 </motion.div>
               ))}
             </AnimatePresence>

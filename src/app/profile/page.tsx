@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react';
 import { useAuth } from '@/lib/auth';
 import { db } from '@/lib/firebase';
-import { doc, getDoc, updateDoc } from 'firebase/firestore';
+import { doc, getDoc, updateDoc, setDoc } from 'firebase/firestore';
 import { useRouter } from 'next/navigation';
 
 interface Player {
@@ -24,15 +24,33 @@ export default function ProfilePage() {
   const [loading, setLoading] = useState(true);
   const [username, setUsername] = useState('');
   const [isEditing, setIsEditing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const fetchPlayerData = async () => {
       if (!user) return;
 
       try {
-        const playerDoc = await getDoc(doc(db, 'players', user.uid));
-        const playerData = playerDoc.data();
-        if (playerData) {
+        const playerRef = doc(db, 'players', user.uid);
+        const playerDoc = await getDoc(playerRef);
+
+        if (!playerDoc.exists()) {
+          // Create new player document if it doesn't exist
+          const newPlayerData: Player = {
+            uid: user.uid,
+            email: user.email || '',
+            username: user.email?.split('@')[0] || 'Anonymous',
+            power: 0,
+            tanzaWins: 0,
+            losses: 0,
+            winStreak: 0,
+            highestWinStreak: 0
+          };
+          await setDoc(playerRef, newPlayerData);
+          setPlayer(newPlayerData);
+          setUsername(newPlayerData.username || '');
+        } else {
+          const playerData = playerDoc.data();
           setPlayer({
             uid: playerData.uid,
             email: playerData.email,
@@ -43,10 +61,11 @@ export default function ProfilePage() {
             winStreak: playerData.winStreak || 0,
             highestWinStreak: playerData.highestWinStreak || 0
           });
-          setUsername(playerData.username || '');
+          setUsername(playerData.username || user.email?.split('@')[0] || 'Anonymous');
         }
       } catch (error) {
         console.error('Error fetching player data:', error);
+        setError('Failed to load profile data');
       } finally {
         setLoading(false);
       }
@@ -59,6 +78,7 @@ export default function ProfilePage() {
     if (!user || !username.trim()) return;
 
     try {
+      setError(null);
       const playerRef = doc(db, 'players', user.uid);
       await updateDoc(playerRef, {
         username: username.trim()
@@ -67,6 +87,7 @@ export default function ProfilePage() {
       setIsEditing(false);
     } catch (error) {
       console.error('Error updating username:', error);
+      setError('Failed to update username. Please try again.');
     }
   };
 
@@ -102,6 +123,7 @@ export default function ProfilePage() {
                     onChange={(e) => setUsername(e.target.value)}
                     className="px-4 py-2 bg-cyber-black border-2 border-cyber-pink text-cyber-blue rounded-lg font-press-start focus:outline-none focus:border-cyber-purple"
                     placeholder="Enter username"
+                    maxLength={20}
                   />
                   <button
                     onClick={handleUpdateUsername}
@@ -109,10 +131,19 @@ export default function ProfilePage() {
                   >
                     Save
                   </button>
+                  <button
+                    onClick={() => {
+                      setIsEditing(false);
+                      setUsername(player.username || player.email?.split('@')[0] || 'Anonymous');
+                    }}
+                    className="px-4 py-2 bg-cyber-black border-2 border-cyber-pink text-cyber-pink rounded-lg font-press-start hover:bg-cyber-purple transition-colors"
+                  >
+                    Cancel
+                  </button>
                 </div>
               ) : (
                 <div className="flex gap-2 items-center">
-                  <span className="text-red-500 font-bold">{player.username || 'Anonymous'}</span>
+                  <span className="text-cyber-pink font-bold">{player.username || player.email?.split('@')[0] || 'Anonymous'}</span>
                   {player.winStreak >= 2 && (
                     <span className="text-yellow-400" title={`${player.winStreak} Win Streak!`}>
                       👑
@@ -125,6 +156,9 @@ export default function ProfilePage() {
                     Edit
                   </button>
                 </div>
+              )}
+              {error && (
+                <p className="text-cyber-red text-sm mt-2">{error}</p>
               )}
             </div>
             <div className="text-cyber-blue text-center sm:text-right">
